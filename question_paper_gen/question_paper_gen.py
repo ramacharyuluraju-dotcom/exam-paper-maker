@@ -12,7 +12,7 @@ st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="�
 BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
 COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
 
-# --- 2. FIREBASE SETUP (Singleton) ---
+# --- 2. FIREBASE SETUP ---
 if not firebase_admin._apps:
     try:
         # Load credentials from .streamlit/secrets.toml
@@ -31,15 +31,6 @@ def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 def login_user(username, password):
-    # --- TEMP: AUTO-CREATE ADMIN (Run once then remove) ---
-    # if username == "admin" and password == "admin123":
-    #     db.collection("users").document("admin").set({
-    #         "name": "System Admin",
-    #         "role": "admin",
-    #         "password": hash_password("admin123")
-    #     })
-    # ------------------------------------------------------
-    
     doc_ref = db.collection("users").document(username)
     doc = doc_ref.get()
     if doc.exists:
@@ -66,8 +57,11 @@ def calculate_total_marks():
                     total += float(q['marks']) if q['marks'] else 0
     return total
 
-# --- 4. HTML GENERATOR (The "Pro" Feature) ---
+# --- 4. HTML GENERATOR (MERGED & ENHANCED) ---
 def generate_html(details, sections):
+    # Generates the USN boxes
+    usn_boxes_html = "".join(['<div class="usn-box"></div>' for _ in range(10)])
+    
     table_rows = ""
     for section in sections:
         if section.get('isNote'):
@@ -97,28 +91,54 @@ def generate_html(details, sections):
             @import url('https://fonts.googleapis.com/css2?family=Times+New+Roman:wght@400;700&family=Arial:wght@400;700&display=swap');
             body {{ font-family: 'Times New Roman', serif; color: #000; padding: 20px; }}
             .paper-container {{ width: 100%; max-width: 210mm; margin: 0 auto; background: white; }}
-            .header-grid {{ text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px; }}
-            .inst-name {{ font-family: 'Arial', sans-serif; font-size: 22px; font-weight: 900; text-transform: uppercase; }}
-            .sub-header {{ font-size: 14px; font-weight: bold; margin: 2px 0; }}
-            .meta-grid {{ border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 10px 0; margin-bottom: 20px; display: flex; justify-content: space-between; flex-wrap: wrap; }}
-            .meta-item {{ width: 48%; font-size: 14px; margin-bottom: 5px; }}
+            
+            /* Header Styles */
+            .header-grid {{ display: flex; align-items: center; justify-content: center; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 10px; }}
+            .logo-placeholder {{ width: 80px; height: 80px; background: #eee; border: 1px dashed #999; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #555; margin-right: 15px; }}
+            .header-text {{ text-align: center; flex: 1; }}
+            .inst-name {{ font-family: 'Arial', sans-serif; font-size: 22px; font-weight: 900; text-transform: uppercase; margin: 0; }}
+            .sub-header {{ font-size: 12px; margin: 2px 0; font-weight: bold; }}
+            .accreditation {{ font-size: 10px; font-style: italic; margin-top: 2px; }}
+
+            /* USN Styles */
+            .usn-wrapper {{ display: flex; justify-content: space-between; align-items: center; margin: 15px 0; }}
+            .usn-boxes {{ display: flex; gap: 0; }}
+            .usn-box {{ width: 25px; height: 25px; border: 1px solid #000; border-right: none; }}
+            .usn-box:last-child {{ border-right: 1px solid #000; }}
+
+            /* Meta Info */
+            .meta-grid {{ width: 100%; border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 10px 0; margin-bottom: 20px; font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; }}
+            .meta-item {{ width: 48%; margin-bottom: 5px; }}
+
+            /* Table */
             table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
             th, td {{ border: 1px solid #000; padding: 6px; }}
             .td-center {{ text-align: center; }} 
             .valign-top {{ vertical-align: top; }}
-            .note-row {{ background: #f9f9f9; font-weight: bold; font-style: italic; }} 
-            .or-row {{ background: #eee; text-align: center; font-weight: bold; }}
-            .footer-grid {{ display: flex; justify-content: space-between; margin-top: 50px; }}
+            .note-row {{ background: #f9f9f9; font-weight: bold; font-style: italic; padding: 8px; }} 
+            .or-row {{ background: #eee; text-align: center; font-weight: bold; padding: 4px; }}
+            
+            /* Footer */
+            .footer-grid {{ display: flex; justify-content: space-between; margin-top: 60px; }}
             .sig-line {{ border-top: 1px solid #000; width: 150px; text-align: center; padding-top: 5px; font-size: 12px; font-weight: bold; }}
         </style>
     </head>
     <body>
         <div class="paper-container">
             <div class="header-grid">
-                <div class="inst-name">{details.get('instituteName', 'INSTITUTE NAME')}</div>
-                <div class="sub-header">{details.get('subHeader', '')}</div>
-                <div class="sub-header">{details.get('department', '')}</div>
-                <div style="font-size: 10px; margin-top: 5px;">{details.get('accreditation', '')}</div>
+                 <div class="header-text">
+                    <div class="inst-name">{details.get('instituteName', 'INSTITUTE NAME')}</div>
+                    <div class="sub-header">{details.get('subHeader', '')}</div>
+                    <div class="sub-header">{details.get('department', '')}</div>
+                    <div class="accreditation">{details.get('accreditation', '')} | {details.get('affiliation', '')}</div>
+                </div>
+            </div>
+
+            <div class="usn-wrapper">
+                <span style="font-weight: bold; font-size: 16px;">USN</span>
+                <div class="usn-boxes">
+                    {usn_boxes_html}
+                </div>
             </div>
             
             <div style="text-align: center; font-weight: bold; font-size: 16px; margin-bottom: 15px; text-decoration: underline;">
@@ -164,6 +184,7 @@ if 'exam_details' not in st.session_state:
         'instituteName': 'AMC ENGINEERING COLLEGE',
         'subHeader': '(AUTONOMOUS)',
         'accreditation': 'NAAC A+ | NBA Accredited',
+        'affiliation': 'Affiliated to VTU',
         'department': 'Department of CSE',
         'examName': 'Internal Assessment 1',
         'semester': '5th Semester - Nov 2025',
@@ -187,13 +208,13 @@ if not st.session_state.user:
                 st.session_state.user['id'] = username
                 st.rerun()
             else:
-                st.error("Invalid Credentials or User does not exist.")
+                st.error("Invalid Credentials.")
     st.stop()
 
 # --- 7. SIDEBAR (User Info) ---
 with st.sidebar:
     role = st.session_state.user.get('role', 'User').upper()
-    name = st.session_state.user.get('name', 'Unknown User')
+    name = st.session_state.user.get('name', 'User')
     
     st.title(f"👤 {role}")
     st.write(f"User: **{name}**")
@@ -204,11 +225,9 @@ with st.sidebar:
     
     st.divider()
     
-    # Admin Toggle
     if st.session_state.user.get('role') == 'admin':
         st.header("⚙️ Admin")
-        is_open = check_submission_window()
-        if is_open:
+        if check_submission_window():
             st.success("🟢 Window OPEN")
             if st.button("Close Window"):
                 db.collection("config").document("settings").set({'submission_window_open': False}, merge=True)
@@ -222,8 +241,8 @@ with st.sidebar:
 # --- 8. MAIN DASHBOARD ---
 st.title("📋 Exam Dashboard")
 
-# The 4 Main Tabs
-tab_work, tab_edit, tab_view, tab_act = st.tabs(["📥 Workspace", "📝 Editor", "👁️ Preview", "🚀 Actions"])
+# 5 Tabs: Added "Backup" tab
+tab_work, tab_edit, tab_view, tab_act, tab_backup = st.tabs(["📥 Inbox", "📝 Editor", "👁️ Preview", "🚀 Actions", "💾 Backup"])
 
 # === TAB 1: WORKSPACE (Inbox) ===
 with tab_work:
@@ -235,14 +254,11 @@ with tab_work:
             exams_ref = db.collection("exams")
             docs = []
             if role == 'faculty':
-                # Faculty see drafts and returns
                 q1 = exams_ref.where("author_id", "==", st.session_state.user['id']).where("status", "in", ["DRAFT", "REVISION"]).stream()
                 docs = list(q1)
             elif role == 'scrutinizer':
-                # Scrutinizers see SUBMITTED
                 docs = list(exams_ref.where("status", "==", "SUBMITTED").stream())
             elif role == 'approver':
-                # Approvers see SCRUTINIZED
                 docs = list(exams_ref.where("status", "==", "SCRUTINIZED").stream())
             
             st.session_state.inbox_docs = {d.id: d.to_dict() for d in docs}
@@ -273,7 +289,10 @@ with tab_edit:
         st.session_state.exam_details['courseName'] = c1.text_input("Course Name", st.session_state.exam_details['courseName'])
         st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details['courseCode'])
         st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details['maxMarks']))
-        # Auto-fill names based on workflow
+        # Extra fields
+        st.session_state.exam_details['affiliation'] = c1.text_input("Affiliation", st.session_state.exam_details.get('affiliation', ''))
+        st.session_state.exam_details['duration'] = c2.text_input("Duration", st.session_state.exam_details.get('duration', ''))
+        
         if role == 'faculty': st.session_state.exam_details['preparedBy'] = st.session_state.user.get('name', '')
         
     st.divider()
@@ -303,7 +322,7 @@ with tab_edit:
                     with st.expander(f"Q {q['qNo']}", expanded=True):
                         c1, c2 = st.columns([1, 6])
                         q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}")
-                        q['text'] = c2.text_area("Question", q['text'], key=f"qt_{q['id']}", height=65)
+                        q['text'] = c2.text_area("Question (Use $$ for Math)", q['text'], key=f"qt_{q['id']}", height=65)
                         
                         if q['text'].strip().upper() != 'OR':
                             m1, m2, m3, m4 = st.columns([2,2,2,1])
@@ -337,18 +356,14 @@ with tab_view:
 # === TAB 4: ACTIONS (Cloud Workflow) ===
 with tab_act:
     st.header("🚀 Submission & Workflow")
-    
     doc_id = st.session_state.get('current_doc_id')
     status = st.session_state.get('current_doc_status', 'NEW')
-    
     st.info(f"Current Status: **{status}**")
     
-    # 1. FACULTY CONTROLS
     if role == 'faculty':
         new_id_inp = st.text_input("Course Code (ID)", value=st.session_state.exam_details.get('courseCode'))
-        
         c1, c2 = st.columns(2)
-        if c1.button("💾 Save Draft"):
+        if c1.button("💾 Save Cloud Draft"):
             if not new_id_inp: st.error("Course Code Required")
             else:
                 data = {
@@ -361,7 +376,7 @@ with tab_act:
                 }
                 db.collection("exams").document(new_id_inp).set(data, merge=True)
                 st.session_state.current_doc_id = new_id_inp
-                st.success("Draft Saved!")
+                st.success("Draft Saved to Cloud!")
 
         if c2.button("🚀 Submit for Scrutiny", type="primary"):
             if check_submission_window():
@@ -375,7 +390,6 @@ with tab_act:
             else:
                 st.error("Submission Window Closed!")
 
-    # 2. SCRUTINIZER CONTROLS
     elif role == 'scrutinizer' and status == 'SUBMITTED':
         comments = st.text_area("Revision Comments (if rejecting)")
         c1, c2 = st.columns(2)
@@ -384,7 +398,6 @@ with tab_act:
             st.warning("Returned to Faculty")
             st.session_state.current_doc_status = "REVISION"
             st.rerun()
-        
         if c2.button("✅ Approve & Forward", type="primary"):
              db.collection("exams").document(doc_id).update({
                  'status': 'SCRUTINIZED', 
@@ -394,7 +407,6 @@ with tab_act:
              st.session_state.current_doc_status = "SCRUTINIZED"
              st.rerun()
 
-    # 3. APPROVER CONTROLS
     elif role == 'approver' and status == 'SCRUTINIZED':
         if st.button("🏆 Final Approval (Lock)", type="primary"):
             db.collection("exams").document(doc_id).update({
@@ -405,3 +417,34 @@ with tab_act:
             st.success("Exam Finalized!")
             st.session_state.current_doc_status = "APPROVED"
             st.rerun()
+
+# === TAB 5: BACKUP (Local JSON) ===
+with tab_backup:
+    st.markdown("### 💾 Local Backup & Restore")
+    st.markdown("Use this to save a copy to your computer, independently of the database.")
+    
+    # Export
+    current_state = {
+        'exam_details': st.session_state.exam_details,
+        'sections': st.session_state.sections
+    }
+    json_str = json.dumps(current_state, indent=2)
+    st.download_button(
+        label="📥 Download JSON Backup",
+        data=json_str,
+        file_name="exam_backup.json",
+        mime="application/json"
+    )
+    
+    # Import
+    uploaded_file = st.file_uploader("📂 Restore from JSON", type=["json"])
+    if uploaded_file is not None:
+        try:
+            data = json.load(uploaded_file)
+            if st.button("Load JSON Data"):
+                st.session_state.exam_details = data['exam_details']
+                st.session_state.sections = data['sections']
+                st.success("Data loaded! Switch to Editor tab.")
+                st.rerun()
+        except Exception as e:
+            st.error(f"Error loading file: {e}")
