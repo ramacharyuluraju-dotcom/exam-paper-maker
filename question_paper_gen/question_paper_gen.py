@@ -177,7 +177,8 @@ if not st.session_state.user:
 # --- 7. SIDEBAR (User Info) ---
 with st.sidebar:
     st.title(f"👤 {st.session_state.user['role'].upper()}")
-    st.write(f"User: **{st.session_state.user['name']}**")
+    # Use .get() to provide a default value if 'name' is missing
+st.write(f"User: **{st.session_state.user.get('name', 'Admin User')}**")
     if st.button("Log Out"):
         st.session_state.user = None
         st.rerun()
