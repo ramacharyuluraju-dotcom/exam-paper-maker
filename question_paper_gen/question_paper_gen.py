@@ -14,9 +14,14 @@ COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
 
 # --- 2. FIREBASE SETUP (Singleton) ---
 if not firebase_admin._apps:
-    # Load credentials from .streamlit/secrets.toml
-    cred = credentials.Certificate(dict(st.secrets["firestore"]))
-    firebase_admin.initialize_app(cred)
+    try:
+        # Load credentials from .streamlit/secrets.toml
+        key_dict = dict(st.secrets["firestore"])
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"🔥 Firebase Error: {e}. Check your secrets.toml file!")
+        st.stop()
 
 db = firestore.client()
 
@@ -26,6 +31,15 @@ def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 def login_user(username, password):
+    # --- TEMP: AUTO-CREATE ADMIN (Run once then remove) ---
+    # if username == "admin" and password == "admin123":
+    #     db.collection("users").document("admin").set({
+    #         "name": "System Admin",
+    #         "role": "admin",
+    #         "password": hash_password("admin123")
+    #     })
+    # ------------------------------------------------------
+    
     doc_ref = db.collection("users").document(username)
     doc = doc_ref.get()
     if doc.exists:
@@ -54,7 +68,6 @@ def calculate_total_marks():
 
 # --- 4. HTML GENERATOR (The "Pro" Feature) ---
 def generate_html(details, sections):
-    # (This is the high-quality HTML template from your request)
     table_rows = ""
     for section in sections:
         if section.get('isNote'):
@@ -67,11 +80,11 @@ def generate_html(details, sections):
                     safe_text = q['text'].replace('\n', '<br>')
                     table_rows += f"""
                     <tr>
-                        <td class="td-center valing-top"><b>{q['qNo']}</b></td>
-                        <td class="td-left valing-top">{safe_text}</td>
-                        <td class="td-center valing-top">{int(q['marks']) if q['marks'] > 0 else ''}</td>
-                        <td class="td-center valing-top">{q['co']}</td>
-                        <td class="td-center valing-top">{q['level']}</td>
+                        <td class="td-center valign-top"><b>{q['qNo']}</b></td>
+                        <td class="td-left valign-top">{safe_text}</td>
+                        <td class="td-center valign-top">{int(q['marks']) if q['marks'] > 0 else ''}</td>
+                        <td class="td-center valign-top">{q['co']}</td>
+                        <td class="td-center valign-top">{q['level']}</td>
                     </tr>"""
 
     html_content = f"""
@@ -91,7 +104,10 @@ def generate_html(details, sections):
             .meta-item {{ width: 48%; font-size: 14px; margin-bottom: 5px; }}
             table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
             th, td {{ border: 1px solid #000; padding: 6px; }}
-            .td-center {{ text-align: center; }} .note-row {{ background: #f9f9f9; font-weight: bold; font-style: italic; }} .or-row {{ background: #eee; text-align: center; font-weight: bold; }}
+            .td-center {{ text-align: center; }} 
+            .valign-top {{ vertical-align: top; }}
+            .note-row {{ background: #f9f9f9; font-weight: bold; font-style: italic; }} 
+            .or-row {{ background: #eee; text-align: center; font-weight: bold; }}
             .footer-grid {{ display: flex; justify-content: space-between; margin-top: 50px; }}
             .sig-line {{ border-top: 1px solid #000; width: 150px; text-align: center; padding-top: 5px; font-size: 12px; font-weight: bold; }}
         </style>
@@ -171,21 +187,25 @@ if not st.session_state.user:
                 st.session_state.user['id'] = username
                 st.rerun()
             else:
-                st.error("Invalid Credentials")
+                st.error("Invalid Credentials or User does not exist.")
     st.stop()
 
 # --- 7. SIDEBAR (User Info) ---
 with st.sidebar:
-    st.title(f"👤 {st.session_state.user['role'].upper()}")
-    # Use .get() to provide a default value if 'name' is missing
-st.write(f"User: **{st.session_state.user.get('name', 'Admin User')}**")
+    role = st.session_state.user.get('role', 'User').upper()
+    name = st.session_state.user.get('name', 'Unknown User')
+    
+    st.title(f"👤 {role}")
+    st.write(f"User: **{name}**")
+    
     if st.button("Log Out"):
         st.session_state.user = None
         st.rerun()
+    
     st.divider()
     
     # Admin Toggle
-    if st.session_state.user['role'] == 'admin':
+    if st.session_state.user.get('role') == 'admin':
         st.header("⚙️ Admin")
         is_open = check_submission_window()
         if is_open:
@@ -207,8 +227,8 @@ tab_work, tab_edit, tab_view, tab_act = st.tabs(["📥 Workspace", "📝 Editor"
 
 # === TAB 1: WORKSPACE (Inbox) ===
 with tab_work:
-    role = st.session_state.user['role']
-    st.markdown(f"### Pending Tasks for {role.capitalize()}")
+    role = st.session_state.user.get('role')
+    st.markdown(f"### Pending Tasks for {str(role).capitalize()}")
     
     if st.button("🔄 Refresh Inbox"):
         with st.spinner("Fetching..."):
@@ -254,7 +274,7 @@ with tab_edit:
         st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details['courseCode'])
         st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details['maxMarks']))
         # Auto-fill names based on workflow
-        if role == 'faculty': st.session_state.exam_details['preparedBy'] = st.session_state.user['name']
+        if role == 'faculty': st.session_state.exam_details['preparedBy'] = st.session_state.user.get('name', '')
         
     st.divider()
 
@@ -336,7 +356,7 @@ with tab_act:
                     'sections': st.session_state.sections,
                     'status': 'DRAFT',
                     'author_id': st.session_state.user['id'],
-                    'author_name': st.session_state.user['name'],
+                    'author_name': st.session_state.user.get('name', 'Unknown'),
                     'timestamp': str(datetime.datetime.now())
                 }
                 db.collection("exams").document(new_id_inp).set(data, merge=True)
@@ -345,8 +365,13 @@ with tab_act:
 
         if c2.button("🚀 Submit for Scrutiny", type="primary"):
             if check_submission_window():
-                 db.collection("exams").document(new_id_inp).update({'status': 'SUBMITTED'})
-                 st.success("Submitted successfully!")
+                 if doc_id:
+                    db.collection("exams").document(doc_id).update({'status': 'SUBMITTED'})
+                    st.success("Submitted successfully!")
+                    st.session_state.current_doc_status = "SUBMITTED"
+                    st.rerun()
+                 else:
+                     st.error("Save Draft first!")
             else:
                 st.error("Submission Window Closed!")
 
@@ -357,20 +382,26 @@ with tab_act:
         if c1.button("↩️ Return for Revision"):
             db.collection("exams").document(doc_id).update({'status': 'REVISION', 'scrutiny_comments': comments})
             st.warning("Returned to Faculty")
+            st.session_state.current_doc_status = "REVISION"
+            st.rerun()
         
         if c2.button("✅ Approve & Forward", type="primary"):
              db.collection("exams").document(doc_id).update({
                  'status': 'SCRUTINIZED', 
-                 'exam_details.scrutinizedBy': st.session_state.user['name']
+                 'exam_details.scrutinizedBy': st.session_state.user.get('name', 'Scrutinizer')
              })
              st.success("Forwarded to Head")
+             st.session_state.current_doc_status = "SCRUTINIZED"
+             st.rerun()
 
     # 3. APPROVER CONTROLS
     elif role == 'approver' and status == 'SCRUTINIZED':
         if st.button("🏆 Final Approval (Lock)", type="primary"):
             db.collection("exams").document(doc_id).update({
                 'status': 'APPROVED',
-                'exam_details.approvedBy': st.session_state.user['name']
+                'exam_details.approvedBy': st.session_state.user.get('name', 'Approver')
             })
             st.balloons()
             st.success("Exam Finalized!")
+            st.session_state.current_doc_status = "APPROVED"
+            st.rerun()
