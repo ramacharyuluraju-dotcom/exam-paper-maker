@@ -478,33 +478,84 @@ with tab_act:
                 st.success("Exam Finalized and Locked!")
                 st.session_state.current_doc_status = 'APPROVED'
 
-# === TAB 5: SECURE BACKUP ===
+# === TAB 5: HYBRID BACKUP (Plain + Secure) ===
 with tab_backup:
-    st.markdown("### 🔐 Encrypted Backup")
-    st.caption("Download a password-locked file to keep on your computer.")
-    
-    # DOWNLOAD
-    pass_down = st.text_input("Set Password for Download", type="password", key="pd")
-    if pass_down:
-        json_str = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections})
-        try:
-            key = get_key_from_password(pass_down)
-            enc_data = Fernet(key).encrypt(json_str.encode())
-            st.download_button("Download Encrypted File", enc_data, "backup.enc")
-        except Exception as e: st.error(f"Error: {e}")
+    st.markdown("### 💾 Backup & Restore")
+    st.caption("Manage your exam data. You can save plain files or password-protected files.")
     
     st.divider()
     
-    # UPLOAD
-    uploaded = st.file_uploader("Upload .enc file")
-    pass_up = st.text_input("Unlock Password", type="password", key="pu")
-    if uploaded and st.button("Unlock"):
-        try:
-            key = get_key_from_password(pass_up)
-            dec_data = Fernet(key).decrypt(uploaded.read())
-            data = json.loads(dec_data.decode())
-            st.session_state.exam_details = data['exam_details']
-            st.session_state.sections = data['sections']
-            st.success("Unlocked & Loaded!")
-            st.rerun()
-        except: st.error("Wrong Password or Corrupt File")
+    # --- SECTION 1: EXPORT (Download) ---
+    c1, c2 = st.columns(2)
+    
+    # Option A: Plain JSON (Easy)
+    with c1:
+        st.subheader("🔓 Plain Backup")
+        st.info("Best for sharing or moving data quickly.")
+        json_str = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections}, indent=2)
+        st.download_button(
+            label="Download .json (No Password)",
+            data=json_str,
+            file_name=f"exam_{st.session_state.exam_details.get('courseCode', 'data')}.json",
+            mime="application/json"
+        )
+
+    # Option B: Encrypted (Secure)
+    with c2:
+        st.subheader("🔐 Secure Backup")
+        st.info("Best for sensitive exam papers.")
+        pass_down = st.text_input("Set Password", type="password", key="pd")
+        if pass_down:
+            try:
+                # Prepare and Encrypt
+                raw_json = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections})
+                key = get_key_from_password(pass_down)
+                enc_data = Fernet(key).encrypt(raw_json.encode())
+                
+                st.download_button(
+                    label="Download .enc (Locked)",
+                    data=enc_data,
+                    file_name=f"secure_{st.session_state.exam_details.get('courseCode', 'data')}.enc",
+                    mime="application/octet-stream"
+                )
+            except Exception as e: st.error(f"Error: {e}")
+    
+    st.divider()
+    
+    # --- SECTION 2: IMPORT (Upload) ---
+    st.subheader("📂 Restore Data")
+    uploaded_file = st.file_uploader("Upload .json (Plain) or .enc (Secure)", type=["json", "enc"])
+    
+    if uploaded_file is not None:
+        file_name = uploaded_file.name
+        
+        # LOGIC 1: If it's a plain JSON file
+        if file_name.endswith(".json"):
+            st.success("📄 Plain JSON file detected.")
+            if st.button("Load Data"):
+                try:
+                    data = json.load(uploaded_file)
+                    st.session_state.exam_details = data['exam_details']
+                    st.session_state.sections = data['sections']
+                    st.success("Data loaded! Go to Editor.")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error reading JSON: {e}")
+
+        # LOGIC 2: If it's an Encrypted .enc file
+        elif file_name.endswith(".enc"):
+            st.warning("🔐 Locked file detected.")
+            unlock_pass = st.text_input("Enter Password to Unlock", type="password", key="pu")
+            
+            if st.button("Unlock & Load"):
+                try:
+                    key = get_key_from_password(unlock_pass)
+                    dec_data = Fernet(key).decrypt(uploaded_file.read())
+                    data = json.loads(dec_data.decode())
+                    
+                    st.session_state.exam_details = data['exam_details']
+                    st.session_state.sections = data['sections']
+                    st.success("Unlocked & Loaded! Go to Editor.")
+                    st.rerun()
+                except:
+                    st.error("❌ Incorrect Password or Corrupted File")
