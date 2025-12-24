@@ -34,16 +34,21 @@ db = firestore.client()
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-def get_key_from_password(password):
-    salt = b'static_salt_for_amc_exam_app' # In prod, store salt with file
+# --- UPDATED HELPER: Flexible Key Generation ---
+def get_key_from_password(password, salt_type='new'):
+    # We support both salts to ensure old and new files both work
+    if salt_type == 'old':
+        salt = b'static_salt_for_exam_app' 
+    else:
+        salt = b'static_salt_for_amc_exam_app'
+        
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
         iterations=100000,
     )
-    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-    return key
+    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
 def login_user(username, password):
     doc_ref = db.collection("users").document(username)
@@ -488,10 +493,11 @@ with tab_backup:
     # --- SECTION 1: EXPORT (Download) ---
     c1, c2 = st.columns(2)
     
-    # Option A: Plain JSON (Easy)
+    # Option A: Plain JSON
     with c1:
         st.subheader("🔓 Plain Backup")
         st.info("Best for sharing or moving data quickly.")
+        # Prepare Data
         json_str = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections}, indent=2)
         st.download_button(
             label="Download .json (No Password)",
@@ -507,9 +513,9 @@ with tab_backup:
         pass_down = st.text_input("Set Password", type="password", key="pd")
         if pass_down:
             try:
-                # Prepare and Encrypt
+                # Prepare and Encrypt (Using 'new' salt by default)
                 raw_json = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections})
-                key = get_key_from_password(pass_down)
+                key = get_key_from_password(pass_down, 'new') 
                 enc_data = Fernet(key).encrypt(raw_json.encode())
                 
                 st.download_button(
@@ -548,14 +554,28 @@ with tab_backup:
             unlock_pass = st.text_input("Enter Password to Unlock", type="password", key="pu")
             
             if st.button("Unlock & Load"):
+                # Read the file once into memory so we can try multiple keys
+                encrypted_bytes = uploaded_file.read()
+                success = False
+                
+                # ATTEMPT 1: Try New Salt
                 try:
-                    key = get_key_from_password(unlock_pass)
-                    dec_data = Fernet(key).decrypt(uploaded_file.read())
+                    key = get_key_from_password(unlock_pass, 'new')
+                    dec_data = Fernet(key).decrypt(encrypted_bytes)
                     data = json.loads(dec_data.decode())
-                    
+                    success = True
+                except:
+                    # ATTEMPT 2: Try Old Salt (Backup plan)
+                    try:
+                        key = get_key_from_password(unlock_pass, 'old')
+                        dec_data = Fernet(key).decrypt(encrypted_bytes)
+                        data = json.loads(dec_data.decode())
+                        success = True
+                    except:
+                        st.error("❌ Password Incorrect (or file is corrupted).")
+
+                if success:
                     st.session_state.exam_details = data['exam_details']
                     st.session_state.sections = data['sections']
                     st.success("Unlocked & Loaded! Go to Editor.")
                     st.rerun()
-                except:
-                    st.error("❌ Incorrect Password or Corrupted File")
