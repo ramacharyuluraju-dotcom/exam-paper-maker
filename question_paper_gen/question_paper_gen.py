@@ -18,7 +18,6 @@ COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
 # --- 2. FIREBASE SETUP ---
 if not firebase_admin._apps:
     try:
-        # Load credentials from .streamlit/secrets.toml
         key_dict = dict(st.secrets["firestore"])
         cred = credentials.Certificate(key_dict)
         firebase_admin.initialize_app(cred)
@@ -33,7 +32,6 @@ db = firestore.client()
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-# (Using the ROBUST flexible salt logic you provided)
 def get_key_from_password(password, salt_type='new'):
     if salt_type == 'old':
         salt = b'static_salt_for_exam_app' 
@@ -210,14 +208,12 @@ with st.sidebar:
                         st.success(f"User {nu} created!")
 
 # --- 8. DASHBOARD TABS ---
-# Added Library and Calendar tabs
 tab_work, tab_edit, tab_lib, tab_cal, tab_backup = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
 
 # === TAB 1: INBOX ===
 with tab_work:
     st.markdown(f"### Tasks for {role.capitalize()}")
     c1, c2 = st.columns([3, 1])
-    # Filters
     filter_dept = c1.selectbox("Filter Dept", ["All", "CSE", "ECE", "MECH", "ISE", "Basic Science"])
     if c2.button("🔄 Refresh"):
         with st.spinner("Fetching..."):
@@ -232,9 +228,7 @@ with tab_work:
 
     if 'inbox_docs' in st.session_state:
         for doc_id, data in st.session_state.inbox_docs.items():
-            # Apply Dept Filter
             if filter_dept != "All" and data.get('meta_dept') != filter_dept: continue
-            
             status = data.get('status', 'NEW')
             color = {"DRAFT":"grey", "SUBMITTED":"blue", "REVISION":"red", "SCRUTINIZED":"orange", "APPROVED":"green"}.get(status, 'grey')
             with st.expander(f"{data['exam_details'].get('courseCode', 'No Code')} : {color}[{status}]"):
@@ -248,7 +242,7 @@ with tab_work:
                     st.session_state.current_doc_status = status
                     st.success(f"Loaded {doc_id}!"); st.rerun()
 
-# === TAB 2: EDITOR (With Save/Submit inside) ===
+# === TAB 2: EDITOR ===
 with tab_edit:
     read_only = False
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
@@ -264,7 +258,6 @@ with tab_edit:
         
     st.divider()
 
-    # Question Editor
     for i, section in enumerate(st.session_state.sections):
         with st.container():
             st.markdown(f"#### Block {i+1}")
@@ -294,65 +287,85 @@ with tab_edit:
         if b1.button("➕ Add Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
         if b2.button("➕ Add Note"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
 
-    # --- SAVE & SUBMIT ACTIONS ---
+    # --- ACTIONS: ROBUST ID LOGIC ---
     st.markdown("### 🚀 Actions")
-    # Identify the Exam ID clearly
-    exam_id = st.session_state.exam_details.get('courseCode')
-    dept = st.session_state.exam_details.get('department')
     
-    # Generate a proper Document ID for Firestore
-    if exam_id and dept:
-        doc_key = f"{exam_id}_{dept}"
-    else:
-        doc_key = None
+    # PRIORITY 1: Use the ID we loaded from Inbox
+    target_id = st.session_state.get('current_doc_id')
+    
+    # PRIORITY 2: Construct ID from inputs (Only if we are creating new)
+    exam_code_input = st.session_state.exam_details.get('courseCode')
+    dept_input = st.session_state.exam_details.get('department')
+    
+    if not target_id and exam_code_input and dept_input:
+        target_id = f"{exam_code_input}_{dept_input}"
 
     c1, c2, c3 = st.columns(3)
     
-    # 1. SAVE DRAFT (Faculty)
+    # FACULTY
     if role == 'faculty':
         if c1.button("💾 Save Draft"):
-            if not doc_key: st.error("❌ Enter Course Code and Dept first!")
+            if not target_id: st.error("❌ Enter Course Code and Dept first!")
             else:
                 data = {
                     'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections,
                     'status': 'DRAFT', 'author_id': st.session_state.user['id'], 'author_name': st.session_state.user['name'],
-                    'meta_dept': dept, 'created_at': str(datetime.datetime.now())
+                    'meta_dept': dept_input, 'created_at': str(datetime.datetime.now())
                 }
-                db.collection("exams").document(doc_key).set(data)
-                st.session_state.current_doc_id = doc_key
-                st.success(f"✅ Saved as {doc_key}")
+                db.collection("exams").document(target_id).set(data)
+                st.session_state.current_doc_id = target_id
+                st.success(f"✅ Saved as {target_id}")
 
-        # 2. SUBMIT (Faculty)
         if c2.button("📤 Submit for Scrutiny", type="primary"):
-            if not doc_key: st.error("Save Draft first!")
-            elif not check_submission_window(): st.error("Submission Window Closed!")
+            if not target_id: st.error("Save Draft first!")
+            elif not check_submission_window(): st.error("Window Closed!")
             else:
-                db.collection("exams").document(doc_key).update({'status': 'SUBMITTED'})
+                db.collection("exams").document(target_id).update({'status': 'SUBMITTED'})
                 st.session_state.current_doc_status = "SUBMITTED"
-                st.balloons(); st.success("Submitted successfully!")
+                st.balloons(); st.success("Submitted!")
 
-    # 3. SCRUTINY & APPROVAL
+    # SCRUTINIZER (FIXED)
     if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
-        comments = st.text_area("Comments")
-        if c1.button("↩️ Return"): db.collection("exams").document(doc_key).update({'status': 'REVISION', 'scrutiny_comments': comments}); st.rerun()
-        if c2.button("✅ Approve"): db.collection("exams").document(doc_key).update({'status': 'SCRUTINIZED'}); st.success("Forwarded"); st.rerun()
+        comments = st.text_area("Review Comments")
+        if c1.button("↩️ Return"):
+            if target_id:
+                db.collection("exams").document(target_id).update({'status': 'REVISION', 'scrutiny_comments': comments})
+                st.session_state.current_doc_status = "REVISION"
+                st.rerun()
+            else: st.error("ID Lost. Reload from Inbox.")
 
+        if c2.button("✅ Approve"):
+            if target_id:
+                db.collection("exams").document(target_id).update({
+                    'status': 'SCRUTINIZED', 
+                    'exam_details.scrutinizedBy': st.session_state.user.get('name')
+                })
+                st.session_state.current_doc_status = "SCRUTINIZED" # Update State
+                st.success("Forwarded to Head")
+                st.rerun()
+            else: st.error("ID Lost. Reload from Inbox.")
+
+    # APPROVER
     if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
-        if c3.button("🏆 Final Approve"): db.collection("exams").document(doc_key).update({'status': 'APPROVED'}); st.success("Published to Library!"); st.rerun()
+        if c3.button("🏆 Final Approve"):
+            if target_id:
+                db.collection("exams").document(target_id).update({
+                    'status': 'APPROVED',
+                    'exam_details.approvedBy': st.session_state.user.get('name')
+                })
+                st.session_state.current_doc_status = "APPROVED"
+                st.balloons(); st.success("Published!")
+                st.rerun()
+            else: st.error("ID Lost.")
     
-    # Preview HTML
     with st.expander("👁️ Live Preview"):
         html_code = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html_code, height=800, scrolling=True)
 
-# === TAB 3: LIBRARY (Past Papers) ===
+# === TAB 3: LIBRARY ===
 with tab_lib:
     st.header("📚 Exam Library")
-    st.caption("Download Approved Question Papers")
-    
-    # Only fetch APPROVED exams
     docs = db.collection("exams").where("status", "==", "APPROVED").stream()
-    
     for doc in docs:
         d = doc.to_dict()
         with st.expander(f"📄 {d['exam_details']['courseName']} ({d['exam_details']['courseCode']})"):
@@ -369,25 +382,20 @@ with tab_cal:
             et = st.text_input("Event Title"); ed = st.date_input("Date"); etype = st.selectbox("Type", ["Pre-Exam", "Exam", "Post-Exam"])
             if st.form_submit_button("Add Event"):
                 db.collection("events").add({'title':et, 'date':str(ed), 'type':etype}); st.success("Added!")
-    
     st.divider()
     events = db.collection("events").order_by("date").stream()
     for e in events:
         ev = e.to_dict()
         st.write(f"**{ev['date']}** : {ev['title']} ({ev['type']})")
 
-# === TAB 5: BACKUP (Hybrid) ===
+# === TAB 5: BACKUP ===
 with tab_backup:
     st.header("💾 Backup / Restore")
     c1, c2 = st.columns(2)
-    
-    # PLAIN JSON
     with c1:
         st.subheader("🔓 Plain JSON")
         json_str = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections}, indent=2)
         st.download_button("Download .json", json_str, "backup.json")
-        
-    # ENCRYPTED
     with c2:
         st.subheader("🔐 Encrypted")
         pw = st.text_input("Password", type="password", key="enc_pw")
@@ -402,7 +410,6 @@ with tab_backup:
     st.divider()
     st.subheader("Restore")
     up = st.file_uploader("Upload .json or .enc", type=['json', 'enc'])
-    
     if up:
         if up.name.endswith(".json"):
             if st.button("Load JSON"):
@@ -414,15 +421,12 @@ with tab_backup:
             if st.button("Unlock"):
                 try:
                     bytes_data = up.read()
-                    # Try New Salt
                     try:
                         key = get_key_from_password(pw_unlock, 'new')
                         d = json.loads(Fernet(key).decrypt(bytes_data).decode())
                     except:
-                        # Try Old Salt
                         key = get_key_from_password(pw_unlock, 'old')
                         d = json.loads(Fernet(key).decrypt(bytes_data).decode())
-                    
                     st.session_state.exam_details = d['exam_details']; st.session_state.sections = d['sections']
                     st.success("Unlocked & Loaded!"); st.rerun()
                 except: st.error("Wrong Password")
