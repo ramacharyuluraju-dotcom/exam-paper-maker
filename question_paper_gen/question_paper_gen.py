@@ -14,6 +14,9 @@ st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="�
 
 BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
 COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
+EXAM_TYPES = ["IA1", "IA2", "IA3", "SEE", "Makeup", "Other"]
+DEPTS = ["CSE", "ECE", "MECH", "ISE", "CIVIL", "EEE", "MBA", "MCA", "Basic Science"]
+SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"]
 
 # --- 2. FIREBASE SETUP ---
 if not firebase_admin._apps:
@@ -27,119 +30,124 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-# --- 3. HELPER FUNCTIONS ---
-
+# --- 3. SECURITY HELPER FUNCTIONS ---
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
 def get_key_from_password(password, salt_type='new'):
-    if salt_type == 'old':
-        salt = b'static_salt_for_exam_app' 
-    else:
-        salt = b'static_salt_for_amc_exam_app'
-        
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=100000,
-    )
+    salt = b'static_salt_for_amc_exam_app' if salt_type == 'new' else b'static_salt_for_exam_app'
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
     return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
 def login_user(username, password):
-    doc_ref = db.collection("users").document(username)
-    doc = doc_ref.get()
+    doc = db.collection("users").document(username).get()
     if doc.exists:
-        user_data = doc.to_dict()
-        if user_data.get('password') == hash_password(password):
-            return user_data
+        u = doc.to_dict()
+        if u.get('password') == hash_password(password): return u
     return None
 
 def check_submission_window():
     try:
-        settings = db.collection("config").document("settings").get()
-        if settings.exists:
-            return settings.to_dict().get('submission_window_open', True)
-    except:
-        return True
-    return True
+        s = db.collection("config").document("settings").get()
+        return s.to_dict().get('submission_window_open', True) if s.exists else True
+    except: return True
 
-# --- 4. HTML GENERATOR ---
+# --- 4. HTML GENERATOR (Fixed Math & New Header) ---
 def generate_html(details, sections):
-    usn_boxes_html = "".join(['<div class="usn-box"></div>' for _ in range(10)])
-    table_rows = ""
-    for section in sections:
-        if section.get('isNote'):
-            table_rows += f"""<tr><td colspan="5" class="note-row">{section['text']}</td></tr>"""
+    # Auto-generate header text based on new metadata
+    header_title = f"{details.get('examType', 'Exam')} - {details.get('semester', '')} Semester"
+    
+    usn_boxes = "".join(['<div class="box"></div>' for _ in range(10)])
+    rows = ""
+    for sec in sections:
+        if sec.get('isNote'):
+            rows += f"<tr><td colspan='5' style='background:#f9f9f9; font-weight:bold; font-style:italic; padding:8px;'>{sec['text']}</td></tr>"
         else:
-            for q in section['questions']:
+            for q in sec['questions']:
                 if q['text'].strip().upper() == 'OR':
-                    table_rows += """<tr><td colspan="5" class="or-row">OR</td></tr>"""
+                    rows += "<tr><td colspan='5' style='text-align:center; font-weight:bold; background:#eee;'>OR</td></tr>"
                 else:
-                    safe_text = q['text'].replace('\n', '<br>')
-                    table_rows += f"""<tr><td class="td-center valign-top"><b>{q['qNo']}</b></td><td class="td-left valign-top">{safe_text}</td><td class="td-center valign-top">{int(q['marks']) if q['marks'] > 0 else ''}</td><td class="td-center valign-top">{q['co']}</td><td class="td-center valign-top">{q['level']}</td></tr>"""
+                    # Replace newlines with breaks for HTML
+                    txt = q['text'].replace('\n', '<br>')
+                    rows += f"""
+                    <tr>
+                        <td style='text-align:center; vertical-align:top;'><b>{q['qNo']}</b></td>
+                        <td style='vertical-align:top;'>{txt}</td>
+                        <td style='text-align:center; vertical-align:top;'>{int(q['marks']) if q['marks'] > 0 else ''}</td>
+                        <td style='text-align:center; vertical-align:top;'>{q['co']}</td>
+                        <td style='text-align:center; vertical-align:top;'>{q['level']}</td>
+                    </tr>"""
 
     return f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <meta charset="utf-8">
-        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-        <style>
-            @import url('https://fonts.googleapis.com/css2?family=Times+New+Roman:wght@400;700&family=Arial:wght@400;700&display=swap');
-            body {{ font-family: 'Times New Roman', serif; color: #000; padding: 20px; }}
-            .paper-container {{ width: 100%; max-width: 210mm; margin: 0 auto; background: white; }}
-            .header-grid {{ display: flex; align-items: center; justify-content: center; margin-bottom: 15px; border-bottom: 2px solid #000; padding-bottom: 10px; }}
-            .header-text {{ text-align: center; flex: 1; }}
-            .inst-name {{ font-family: 'Arial', sans-serif; font-size: 22px; font-weight: 900; text-transform: uppercase; margin: 0; }}
-            .sub-header {{ font-size: 12px; margin: 2px 0; font-weight: bold; }}
-            .accreditation {{ font-size: 10px; font-style: italic; margin-top: 2px; }}
-            .usn-wrapper {{ display: flex; justify-content: space-between; align-items: center; margin: 15px 0; }}
-            .usn-boxes {{ display: flex; gap: 0; }}
-            .usn-box {{ width: 25px; height: 25px; border: 1px solid #000; border-right: none; }}
-            .usn-box:last-child {{ border-right: 1px solid #000; }}
-            .meta-grid {{ width: 100%; border-top: 1px solid #000; border-bottom: 1px solid #000; padding: 10px 0; margin-bottom: 20px; font-size: 14px; display: flex; justify-content: space-between; flex-wrap: wrap; }}
-            .meta-item {{ width: 48%; margin-bottom: 5px; }}
-            table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
-            th, td {{ border: 1px solid #000; padding: 6px; }}
-            .td-center {{ text-align: center; }} .valign-top {{ vertical-align: top; }}
-            .note-row {{ background: #f9f9f9; font-weight: bold; font-style: italic; padding: 8px; }} 
-            .or-row {{ background: #eee; text-align: center; font-weight: bold; padding: 4px; }}
-            .footer-grid {{ display: flex; justify-content: space-between; margin-top: 60px; }}
-            .sig-line {{ border-top: 1px solid #000; width: 150px; text-align: center; padding-top: 5px; font-size: 12px; font-weight: bold; }}
-        </style>
+    <meta charset="utf-8">
+    <script>
+    window.MathJax = {{
+      tex: {{ inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }},
+      svg: {{ fontCache: 'global' }}
+    }};
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        body {{ font-family: 'Times New Roman', serif; padding: 40px; color: #000; }}
+        .paper {{ width: 210mm; margin: 0 auto; background: white; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }}
+        td, th {{ border: 1px solid black; padding: 6px; }}
+        .header {{ text-align: center; margin-bottom: 20px; border-bottom: 2px solid black; padding-bottom: 10px; }}
+        .inst {{ font-size: 24px; font-weight: bold; text-transform: uppercase; font-family: Arial, sans-serif; }}
+        .meta {{ display: flex; justify-content: space-between; font-size: 14px; margin: 5px 0; }}
+        .box {{ width: 25px; height: 25px; border: 1px solid black; display: inline-block; margin-right: -1px; }}
+        .sig-block {{ display: flex; justify-content: space-between; margin-top: 50px; text-align: center; font-size: 12px; }}
+        .sig-line {{ border-top: 1px solid black; width: 150px; padding-top: 5px; font-weight: bold; }}
+    </style>
     </head>
     <body>
-        <div class="paper-container">
-            <div class="header-grid">
-                <div class="header-text">
-                    <div class="inst-name">{details.get('instituteName', 'INSTITUTE NAME')}</div>
-                    <div class="sub-header">{details.get('subHeader', '')}</div>
-                    <div class="sub-header">{details.get('department', '')}</div>
-                    <div class="accreditation">{details.get('accreditation', '')} | {details.get('affiliation', '')}</div>
-                </div>
+        <div class="paper">
+            <div class="header">
+                <div class="inst">{details.get('instituteName')}</div>
+                <div style="font-size:12px; font-weight:bold;">{details.get('subHeader')}</div>
+                <div style="font-size:12px; font-weight:bold;">{details.get('department')}</div>
+                <div style="font-size:10px; font-style:italic;">{details.get('accreditation')}</div>
             </div>
-            <div class="usn-wrapper">
-                <span style="font-weight: bold; font-size: 16px;">USN</span>
-                <div class="usn-boxes">{usn_boxes_html}</div>
+            
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                <span style="font-weight:bold; font-size:16px;">USN</span>
+                <div style="display:flex;">{usn_boxes}</div>
             </div>
-            <div style="text-align: center; font-weight: bold; font-size: 16px; margin-bottom: 15px; text-decoration: underline;">
-                {details.get('examName', '')} - {details.get('semester', '')}
+
+            <div style="text-align:center; font-weight:bold; font-size:16px; text-decoration:underline; margin-bottom:10px;">
+                {header_title} - {details.get('acadYear', '')}
             </div>
-            <div class="meta-grid">
-                <div class="meta-item"><b>Course:</b> {details.get('courseName', '')}</div>
-                <div class="meta-item"><b>Max Marks:</b> {details.get('maxMarks', '')}</div>
-                <div class="meta-item"><b>Code:</b> {details.get('courseCode', '')}</div>
-                <div class="meta-item"><b>Duration:</b> {details.get('duration', '')}</div>
+            
+            <div class="meta">
+                <span><b>Course:</b> {details.get('courseName')}</span>
+                <span><b>Code:</b> {details.get('courseCode')}</span>
             </div>
+             <div class="meta">
+                <span><b>Date:</b> {details.get('examDate')}</span>
+                <span><b>Duration:</b> {details.get('duration')}</span>
+                <span><b>Max Marks:</b> {details.get('maxMarks')}</span>
+            </div>
+
             <table>
-                <thead><tr><th style="width: 8%;">Q.No</th><th style="width: 62%;">Questions</th><th style="width: 10%;">Marks</th><th style="width: 10%;">CO</th><th style="width: 10%;">Level</th></tr></thead>
-                <tbody>{table_rows}</tbody>
+                <thead>
+                    <tr style="background:#f0f0f0;">
+                        <th width="8%">Q.No</th>
+                        <th width="62%">Question</th>
+                        <th width="10%">Marks</th>
+                        <th width="10%">CO</th>
+                        <th width="10%">Level</th>
+                    </tr>
+                </thead>
+                <tbody>{rows}</tbody>
             </table>
-            <div class="footer-grid">
-                <div><div class="sig-line">{details.get('preparedBy', '')}<br>Prepared By</div></div>
-                <div><div class="sig-line">{details.get('scrutinizedBy', '')}<br>Scrutinized By</div></div>
-                <div><div class="sig-line">{details.get('approvedBy', '')}<br>Approved By</div></div>
+
+            <div class="sig-block">
+                <div><div class="sig-line">{details.get('preparedBy','')}<br>Prepared By</div></div>
+                <div><div class="sig-line">{details.get('scrutinizedBy','')}<br>Scrutinized By</div></div>
+                <div><div class="sig-line">{details.get('approvedBy','')}<br>Approved By</div></div>
             </div>
         </div>
     </body>
@@ -151,9 +159,8 @@ if 'user' not in st.session_state: st.session_state.user = None
 if 'exam_details' not in st.session_state:
     st.session_state.exam_details = {
         'instituteName': 'AMC ENGINEERING COLLEGE', 'subHeader': '(AUTONOMOUS)',
-        'accreditation': 'NAAC A+ | NBA Accredited', 'affiliation': 'Affiliated to VTU & AICTE',
-        'department': 'Department of Electronics & Communication Engineering',
-        'examName': 'Internal Assessment 1', 'semester': '1st Semester B.E – Nov 2025',
+        'accreditation': 'NAAC A+ | NBA Accredited', 'department': 'Department of CSE',
+        'acadYear': '2024-2025', 'semester': '5th', 'examType': 'IA1', 'examDate': str(datetime.date.today()),
         'courseName': '', 'courseCode': '', 'maxMarks': 50, 'duration': '90 Mins',
         'preparedBy': '', 'scrutinizedBy': '', 'approvedBy': ''
     }
@@ -162,271 +169,273 @@ if 'sections' not in st.session_state:
 if 'current_doc_id' not in st.session_state: st.session_state.current_doc_id = None
 if 'current_doc_status' not in st.session_state: st.session_state.current_doc_status = "NEW"
 
-# --- 6. LOGIN SCREEN ---
+# --- 6. LOGIN ---
 if not st.session_state.user:
-    c1, c2, c3 = st.columns([1, 2, 1])
+    c1, c2, c3 = st.columns([1,2,1])
     with c2:
         st.title("🔐 AMC Exam Portal")
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        u = st.text_input("Username"); p = st.text_input("Password", type="password")
         if st.button("Log In", type="primary"):
-            user_blob = login_user(username, password)
-            if user_blob:
-                st.session_state.user = user_blob
-                st.session_state.user['id'] = username
-                st.rerun()
-            else: st.error("Invalid Credentials.")
+            user = login_user(u, p)
+            if user:
+                st.session_state.user = user; st.session_state.user['id'] = u; st.rerun()
+            else: st.error("Invalid Credentials")
     st.stop()
 
 # --- 7. SIDEBAR ---
 with st.sidebar:
     role = st.session_state.user.get('role', 'User').lower()
-    name = st.session_state.user.get('name', 'User')
     st.title(f"👤 {role.upper()}")
-    st.write(f"User: **{name}**")
+    st.write(f"User: **{st.session_state.user.get('name')}**")
     if st.button("Log Out"): st.session_state.user = None; st.rerun()
     st.divider()
     
     if role == 'admin':
-        st.header("⚙️ Admin Panel")
-        with st.expander("Submission Control"):
-            is_open = check_submission_window()
-            if is_open:
-                st.success("🟢 Submissions OPEN")
-                if st.button("Close Window"): db.collection("config").document("settings").set({'submission_window_open': False}, merge=True); st.rerun()
+        st.header("⚙️ Admin")
+        with st.expander("Control Panel"):
+            if check_submission_window():
+                st.success("🟢 Window OPEN")
+                if st.button("Close"): db.collection("config").document("settings").set({'submission_window_open': False}, merge=True); st.rerun()
             else:
-                st.error("🔴 Submissions CLOSED")
-                if st.button("Open Window"): db.collection("config").document("settings").set({'submission_window_open': True}, merge=True); st.rerun()
+                st.error("🔴 Window CLOSED")
+                if st.button("Open"): db.collection("config").document("settings").set({'submission_window_open': True}, merge=True); st.rerun()
         
-        with st.expander("Add Faculty"):
-            with st.form("add_user_form"):
-                nu = st.text_input("Username"); nn = st.text_input("Name"); np = st.text_input("Password", type="password")
-                nr = st.selectbox("Role", ["faculty", "scrutinizer", "approver", "admin"]); nd = st.text_input("Dept (e.g. CSE)")
-                if st.form_submit_button("Create User"):
-                    if nu and np:
-                        db.collection("users").document(nu).set({'name': nn, 'password': hash_password(np), 'role': nr, 'department': nd})
-                        st.success(f"User {nu} created!")
+        with st.expander("Add User"):
+            with st.form("new_u"):
+                nu = st.text_input("ID"); nn = st.text_input("Name"); np = st.text_input("Pass", type="password")
+                nr = st.selectbox("Role", ["faculty","scrutinizer","approver","admin"]); nd = st.selectbox("Dept", DEPTS)
+                if st.form_submit_button("Add"):
+                    if nu and np: db.collection("users").document(nu).set({'name':nn, 'password':hash_password(np), 'role':nr, 'department':nd}); st.success("Added!")
 
 # --- 8. DASHBOARD TABS ---
-tab_work, tab_edit, tab_lib, tab_cal, tab_backup = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
+t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
 
-# === TAB 1: INBOX ===
-with tab_work:
-    st.markdown(f"### Tasks for {role.capitalize()}")
-    c1, c2 = st.columns([3, 1])
-    filter_dept = c1.selectbox("Filter Dept", ["All", "CSE", "ECE", "MECH", "ISE", "Basic Science"])
-    if c2.button("🔄 Refresh"):
-        with st.spinner("Fetching..."):
-            exams_ref = db.collection("exams")
-            docs = []
-            if role == 'faculty': q1 = exams_ref.where("author_id", "==", st.session_state.user['id']).stream(); docs = [d for d in q1]
-            elif role == 'scrutinizer': docs = list(exams_ref.where("status", "==", "SUBMITTED").stream())
-            elif role == 'approver': docs = list(exams_ref.where("status", "==", "SCRUTINIZED").stream())
-            elif role == 'admin': docs = list(exams_ref.stream())
-            st.session_state.inbox_docs = {d.id: d.to_dict() for d in docs}
-            st.toast("Updated")
+# === TAB 1: INBOX (Smart Filtering) ===
+with t_inbox:
+    st.markdown(f"### 📥 {role.capitalize()} Inbox")
+    
+    # Filter Row
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    f_ay = fc1.selectbox("Academic Year", ["All", "2024-2025", "2025-2026", "2023-2024"])
+    f_dept = fc2.selectbox("Dept", ["All"] + DEPTS)
+    f_sem = fc3.selectbox("Sem", ["All"] + SEMESTERS)
+    f_type = fc4.selectbox("Exam", ["All"] + EXAM_TYPES)
 
-    if 'inbox_docs' in st.session_state:
-        for doc_id, data in st.session_state.inbox_docs.items():
-            if filter_dept != "All" and data.get('meta_dept') != filter_dept: continue
-            status = data.get('status', 'NEW')
+    if st.button("🔄 Refresh Inbox"):
+        docs = []
+        ref = db.collection("exams")
+        if role == 'faculty': docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
+        elif role == 'scrutinizer': docs = list(ref.where("status", "==", "SUBMITTED").stream())
+        elif role == 'approver': docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
+        elif role == 'admin': docs = list(ref.stream())
+        st.session_state.inbox_cache = [d for d in docs]
+    
+    if 'inbox_cache' in st.session_state:
+        for doc in st.session_state.inbox_cache:
+            d = doc.to_dict()
+            det = d.get('exam_details', {})
+            
+            # Apply Filters
+            if f_ay != "All" and det.get('acadYear') != f_ay: continue
+            if f_dept != "All" and det.get('department') != f_dept: continue
+            if f_sem != "All" and det.get('semester') != f_sem: continue
+            if f_type != "All" and det.get('examType') != f_type: continue
+
+            # UI Card
+            status = d.get('status', 'NEW')
             color = {"DRAFT":"grey", "SUBMITTED":"blue", "REVISION":"red", "SCRUTINIZED":"orange", "APPROVED":"green"}.get(status, 'grey')
-            with st.expander(f"{data['exam_details'].get('courseCode', 'No Code')} : {color}[{status}]"):
-                c1, c2 = st.columns([3, 1])
-                c1.write(f"**Subject:** {data['exam_details'].get('courseName')} | **Author:** {data.get('author_name')}")
-                if data.get('scrutiny_comments') and role == 'faculty': c1.error(f"⚠️ Feedback: {data.get('scrutiny_comments')}")
-                if c2.button("📂 Load", key=f"load_{doc_id}"):
-                    st.session_state.exam_details = data['exam_details']
-                    st.session_state.sections = data['sections']
-                    st.session_state.current_doc_id = doc_id
+            
+            with st.expander(f"{det.get('courseCode')} | {det.get('examType')} | {status}"):
+                c1, c2 = st.columns([4, 1])
+                c1.write(f"**{det.get('courseName')}**")
+                c1.caption(f"{det.get('acadYear')} | {det.get('department')} | {det.get('semester')} Sem | {det.get('examDate')}")
+                if d.get('scrutiny_comments') and role == 'faculty': c1.error(f"Feedback: {d.get('scrutiny_comments')}")
+                
+                if c2.button("📂 Load", key=f"ld_{doc.id}"):
+                    st.session_state.exam_details = d['exam_details']
+                    st.session_state.sections = d['sections']
+                    st.session_state.current_doc_id = doc.id
                     st.session_state.current_doc_status = status
-                    st.success(f"Loaded {doc_id}!"); st.rerun()
+                    st.success("Loaded!"); st.rerun()
 
-# === TAB 2: EDITOR ===
-with tab_edit:
+# === TAB 2: EDITOR (Organized & Math Ready) ===
+with t_edit:
     read_only = False
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
         st.warning("🔒 View Only Mode"); read_only = True
 
-    with st.expander("📌 Exam Details (Must fill for Saving)", expanded=True):
-        c1, c2 = st.columns(2)
-        st.session_state.exam_details['examName'] = c1.text_input("Exam Name", st.session_state.exam_details['examName'], disabled=read_only)
-        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code (ID)", st.session_state.exam_details['courseCode'], disabled=read_only)
-        st.session_state.exam_details['courseName'] = c1.text_input("Course Name", st.session_state.exam_details['courseName'], disabled=read_only)
-        st.session_state.exam_details['department'] = c2.selectbox("Department", ["CSE", "ECE", "MECH", "ISE", "Basic Science"], index=1, disabled=read_only)
-        st.session_state.exam_details['maxMarks'] = c1.number_input("Marks", value=int(st.session_state.exam_details['maxMarks']), disabled=read_only)
+    st.subheader("1. Organization & Metadata")
+    with st.container():
+        c1, c2, c3, c4 = st.columns(4)
+        st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear', '2024-2025'), disabled=read_only)
+        st.session_state.exam_details['department'] = c2.selectbox("Department", DEPTS, index=DEPTS.index(st.session_state.exam_details.get('department', 'CSE')) if st.session_state.exam_details.get('department') in DEPTS else 0, disabled=read_only)
+        st.session_state.exam_details['semester'] = c3.selectbox("Semester", SEMESTERS, index=SEMESTERS.index(st.session_state.exam_details.get('semester', '1st')) if st.session_state.exam_details.get('semester') in SEMESTERS else 0, disabled=read_only)
+        st.session_state.exam_details['examType'] = c4.selectbox("Exam Type", EXAM_TYPES, index=EXAM_TYPES.index(st.session_state.exam_details.get('examType', 'IA1')) if st.session_state.exam_details.get('examType') in EXAM_TYPES else 0, disabled=read_only)
         
-    st.divider()
+        c1, c2, c3 = st.columns(3)
+        st.session_state.exam_details['examDate'] = str(c1.date_input("Exam Date", value=datetime.datetime.strptime(st.session_state.exam_details.get('examDate', str(datetime.date.today())), "%Y-%m-%d").date(), disabled=read_only))
+        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=read_only)
+        st.session_state.exam_details['courseName'] = c3.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=read_only)
 
-    for i, section in enumerate(st.session_state.sections):
-        with st.container():
-            st.markdown(f"#### Block {i+1}")
-            if section.get('isNote'):
-                c_del, c_txt = st.columns([1, 10])
-                if not read_only and c_del.button("🗑️", key=f"del_s_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
-                section['text'] = c_txt.text_input("Note", section['text'], key=f"n_{section['id']}", disabled=read_only)
-            else:
-                h1, h2 = st.columns([9, 1])
-                if not read_only and h2.button("🗑️ Blk", key=f"del_s_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
-                for j, q in enumerate(section['questions']):
-                    c1, c2 = st.columns([1, 6])
-                    q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}", disabled=read_only)
-                    q['text'] = c2.text_area("Question", q['text'], key=f"qt_{q['id']}", height=65, disabled=read_only)
-                    if q['text'].strip().upper() != 'OR':
-                        m1, m2, m3 = st.columns([1,1,1])
-                        q['marks'] = m1.number_input("Marks", float(q['marks']), key=f"mk_{q['id']}", disabled=read_only)
-                        q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}", disabled=read_only)
-                        q['level'] = m3.selectbox("Lvl", BLOOMS_LEVELS, key=f"lv_{q['id']}", disabled=read_only)
+    st.divider()
     
-            if not read_only and st.button("➕ Add Q", key=f"addq_{section['id']}"):
-                section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo': '', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}); st.rerun()
-            st.divider()
+    st.subheader("2. Questions (Supports LaTeX Math: $x^2$)")
+    for i, section in enumerate(st.session_state.sections):
+        st.markdown(f"**Block {i+1}**")
+        if section.get('isNote'):
+            c_del, c_txt = st.columns([1, 10])
+            if not read_only and c_del.button("❌", key=f"dels_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
+            section['text'] = c_txt.text_input("Instruction", section['text'], key=f"n_{section['id']}", disabled=read_only)
+        else:
+            h1, h2 = st.columns([10, 1])
+            if not read_only and h2.button("❌ Blk", key=f"dels_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
+            
+            for j, q in enumerate(section['questions']):
+                c1, c2 = st.columns([1, 8])
+                q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}", disabled=read_only)
+                q['text'] = c2.text_area("Question Text (Use $ for math)", q['text'], height=70, key=f"qt_{q['id']}", disabled=read_only)
+                
+                if q['text'].upper() != 'OR':
+                    m1, m2, m3, m4 = st.columns([2,2,2,1])
+                    q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{q['id']}", disabled=read_only)
+                    q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}", disabled=read_only)
+                    q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{q['id']}", disabled=read_only)
+                    if not read_only and m4.button("❌", key=f"dq_{q['id']}"): section['questions'].pop(j); st.rerun()
+            
+            if not read_only and st.button("➕ Q", key=f"addq_{section['id']}"):
+                section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}); st.rerun()
+        st.divider()
 
     if not read_only:
         b1, b2 = st.columns(2)
-        if b1.button("➕ Add Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
-        if b2.button("➕ Add Note"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
+        if b1.button("➕ Question Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
+        if b2.button("➕ Instruction Note"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
 
-    # --- ACTIONS: ROBUST ID LOGIC ---
-    st.markdown("### 🚀 Actions")
+    # --- ACTIONS & PREVIEW ---
+    st.markdown("### Actions")
+    # Identify Loaded ID or Create New Composite ID
+    current_id = st.session_state.get('current_doc_id')
     
-    # PRIORITY 1: Use the ID we loaded from Inbox
-    target_id = st.session_state.get('current_doc_id')
-    
-    # PRIORITY 2: Construct ID from inputs (Only if we are creating new)
-    exam_code_input = st.session_state.exam_details.get('courseCode')
-    dept_input = st.session_state.exam_details.get('department')
-    
-    if not target_id and exam_code_input and dept_input:
-        target_id = f"{exam_code_input}_{dept_input}"
+    # Construct ID if new: AY_DEPT_SEM_TYPE_CODE
+    if not current_id:
+        d = st.session_state.exam_details
+        if d['courseCode'] and d['department']:
+            # Example ID: 2024-25_CSE_5th_IA1_18CS51
+            safe_ay = d['acadYear'].replace(" ", "")
+            current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}"
 
     c1, c2, c3 = st.columns(3)
-    
-    # FACULTY
     if role == 'faculty':
         if c1.button("💾 Save Draft"):
-            if not target_id: st.error("❌ Enter Course Code and Dept first!")
+            if not current_id: st.error("Fill Header Details first!")
             else:
                 data = {
                     'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections,
                     'status': 'DRAFT', 'author_id': st.session_state.user['id'], 'author_name': st.session_state.user['name'],
-                    'meta_dept': dept_input, 'created_at': str(datetime.datetime.now())
+                    'created_at': str(datetime.datetime.now())
                 }
-                db.collection("exams").document(target_id).set(data)
-                st.session_state.current_doc_id = target_id
-                st.success(f"✅ Saved as {target_id}")
+                db.collection("exams").document(current_id).set(data)
+                st.session_state.current_doc_id = current_id
+                st.success(f"Saved: {current_id}")
 
-        if c2.button("📤 Submit for Scrutiny", type="primary"):
-            if not target_id: st.error("Save Draft first!")
-            elif not check_submission_window(): st.error("Window Closed!")
+        if c2.button("📤 Submit", type="primary"):
+            if not current_id: st.error("Save first")
+            elif not check_submission_window(): st.error("Window Closed")
             else:
-                db.collection("exams").document(target_id).update({'status': 'SUBMITTED'})
+                db.collection("exams").document(current_id).update({'status': 'SUBMITTED'})
                 st.session_state.current_doc_status = "SUBMITTED"
-                st.balloons(); st.success("Submitted!")
+                st.success("Submitted!")
 
-    # SCRUTINIZER (FIXED)
     if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
-        comments = st.text_area("Review Comments")
-        if c1.button("↩️ Return"):
-            if target_id:
-                db.collection("exams").document(target_id).update({'status': 'REVISION', 'scrutiny_comments': comments})
-                st.session_state.current_doc_status = "REVISION"
-                st.rerun()
-            else: st.error("ID Lost. Reload from Inbox.")
+        comm = st.text_area("Comments")
+        if c1.button("Return"): db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
+        if c2.button("Approve"): db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user['name']}); st.success("Approved"); st.rerun()
 
-        if c2.button("✅ Approve"):
-            if target_id:
-                db.collection("exams").document(target_id).update({
-                    'status': 'SCRUTINIZED', 
-                    'exam_details.scrutinizedBy': st.session_state.user.get('name')
-                })
-                st.session_state.current_doc_status = "SCRUTINIZED" # Update State
-                st.success("Forwarded to Head")
-                st.rerun()
-            else: st.error("ID Lost. Reload from Inbox.")
-
-    # APPROVER
     if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
-        if c3.button("🏆 Final Approve"):
-            if target_id:
-                db.collection("exams").document(target_id).update({
-                    'status': 'APPROVED',
-                    'exam_details.approvedBy': st.session_state.user.get('name')
-                })
-                st.session_state.current_doc_status = "APPROVED"
-                st.balloons(); st.success("Published!")
-                st.rerun()
-            else: st.error("ID Lost.")
-    
-    with st.expander("👁️ Live Preview"):
-        html_code = generate_html(st.session_state.exam_details, st.session_state.sections)
-        st.components.v1.html(html_code, height=800, scrolling=True)
+        if c3.button("Final Approve"): db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user['name']}); st.success("Published!"); st.rerun()
 
-# === TAB 3: LIBRARY ===
-with tab_lib:
-    st.header("📚 Exam Library")
-    docs = db.collection("exams").where("status", "==", "APPROVED").stream()
+    with st.expander("👁️ Live Preview (Check Math)"):
+        html = generate_html(st.session_state.exam_details, st.session_state.sections)
+        st.components.v1.html(html, height=800, scrolling=True)
+
+# === TAB 3: LIBRARY (Global Archive) ===
+with t_lib:
+    st.header("📚 Exam Archive")
+    
+    # Hierarchical Filter
+    lc1, lc2, lc3, lc4 = st.columns(4)
+    l_ay = lc1.selectbox("Year", ["All", "2024-2025", "2023-2024"], key='lay')
+    l_dept = lc2.selectbox("Dept", ["All"] + DEPTS, key='ld')
+    l_sem = lc3.selectbox("Sem", ["All"] + SEMESTERS, key='ls')
+    l_type = lc4.selectbox("Type", ["All"] + EXAM_TYPES, key='lt')
+    
+    docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
+    
     for doc in docs:
         d = doc.to_dict()
-        with st.expander(f"📄 {d['exam_details']['courseName']} ({d['exam_details']['courseCode']})"):
-            st.write(f"**Dept:** {d.get('meta_dept')} | **Date:** {d.get('created_at', '')[:10]}")
-            if st.button("👁️ View", key=f"view_lib_{doc.id}"):
-                html = generate_html(d['exam_details'], d['sections'])
-                st.components.v1.html(html, height=600, scrolling=True)
+        det = d.get('exam_details', {})
+        
+        # Apply Filter
+        if l_ay != "All" and det.get('acadYear') != l_ay: continue
+        if l_dept != "All" and det.get('department') != l_dept: continue
+        if l_sem != "All" and det.get('semester') != l_sem: continue
+        if l_type != "All" and det.get('examType') != l_type: continue
+        
+        with st.expander(f"{det.get('acadYear')} | {det.get('courseName')} ({det.get('examType')})"):
+            st.write(f"**Date:** {det.get('examDate')} | **Author:** {d.get('author_name')}")
+            if st.button("👁️ View Paper", key=f"vlib_{doc.id}"):
+                html = generate_html(det, d['sections'])
+                st.components.v1.html(html, height=800, scrolling=True)
 
 # === TAB 4: CALENDAR ===
-with tab_cal:
-    st.header("📅 Academic Calendar")
+with t_cal:
+    st.header("📅 Academic Schedule")
+    # Only Admin adds events
     if role == 'admin':
-        with st.form("add_event"):
-            et = st.text_input("Event Title"); ed = st.date_input("Date"); etype = st.selectbox("Type", ["Pre-Exam", "Exam", "Post-Exam"])
-            if st.form_submit_button("Add Event"):
-                db.collection("events").add({'title':et, 'date':str(ed), 'type':etype}); st.success("Added!")
-    st.divider()
-    events = db.collection("events").order_by("date").stream()
-    for e in events:
-        ev = e.to_dict()
-        st.write(f"**{ev['date']}** : {ev['title']} ({ev['type']})")
+        with st.form("evt"):
+            t = st.text_input("Title"); d = st.date_input("Date"); ty = st.selectbox("Tag", ["Exam", "Deadline", "Holiday"])
+            if st.form_submit_button("Add"): db.collection("events").add({'title':t, 'date':str(d), 'type':ty}); st.success("Added")
+    
+    # Timeline
+    evs = db.collection("events").order_by("date").stream()
+    for e in evs:
+        v = e.to_dict()
+        icon = "🔴" if v['type'] == 'Exam' else "🟡" if v['type'] == 'Deadline' else "🟢"
+        st.write(f"{icon} **{v['date']}**: {v['title']}")
 
 # === TAB 5: BACKUP ===
-with tab_backup:
-    st.header("💾 Backup / Restore")
+with t_bak:
+    st.header("💾 Backup")
     c1, c2 = st.columns(2)
     with c1:
-        st.subheader("🔓 Plain JSON")
-        json_str = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections}, indent=2)
-        st.download_button("Download .json", json_str, "backup.json")
+        st.caption("Plain JSON")
+        js = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections})
+        st.download_button("Download JSON", js, "backup.json")
     with c2:
-        st.subheader("🔐 Encrypted")
-        pw = st.text_input("Password", type="password", key="enc_pw")
+        st.caption("Encrypted")
+        pw = st.text_input("Password", type="password", key="bpw")
         if pw:
             try:
-                raw = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections})
-                key = get_key_from_password(pw, 'new')
-                enc = Fernet(key).encrypt(raw.encode())
-                st.download_button("Download .enc", enc, "backup.enc")
-            except: st.error("Error encrypting")
-
+                k = get_key_from_password(pw, 'new')
+                enc = Fernet(k).encrypt(js.encode())
+                st.download_button("Download Encrypted", enc, "backup.enc")
+            except: pass
+            
     st.divider()
-    st.subheader("Restore")
-    up = st.file_uploader("Upload .json or .enc", type=['json', 'enc'])
+    up = st.file_uploader("Restore", type=['json', 'enc'])
     if up:
-        if up.name.endswith(".json"):
+        if up.name.endswith('.json'):
             if st.button("Load JSON"):
                 d = json.load(up)
                 st.session_state.exam_details = d['exam_details']; st.session_state.sections = d['sections']
                 st.success("Loaded!"); st.rerun()
-        elif up.name.endswith(".enc"):
-            pw_unlock = st.text_input("Unlock Password", type="password", key="dec_pw")
+        elif up.name.endswith('.enc'):
+            pwu = st.text_input("Unlock Pass", type="password")
             if st.button("Unlock"):
                 try:
-                    bytes_data = up.read()
-                    try:
-                        key = get_key_from_password(pw_unlock, 'new')
-                        d = json.loads(Fernet(key).decrypt(bytes_data).decode())
-                    except:
-                        key = get_key_from_password(pw_unlock, 'old')
-                        d = json.loads(Fernet(key).decrypt(bytes_data).decode())
+                    raw = up.read()
+                    try: k = get_key_from_password(pwu, 'new'); d = json.loads(Fernet(k).decrypt(raw).decode())
+                    except: k = get_key_from_password(pwu, 'old'); d = json.loads(Fernet(k).decrypt(raw).decode())
                     st.session_state.exam_details = d['exam_details']; st.session_state.sections = d['sections']
-                    st.success("Unlocked & Loaded!"); st.rerun()
+                    st.success("Loaded!"); st.rerun()
                 except: st.error("Wrong Password")
