@@ -12,6 +12,13 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 # --- 1. CONFIGURATION & CONSTANTS ---
 st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="🎓")
 
+# Academic Constants
+BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
+COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
+EXAM_TYPES = ["IA1", "IA2", "IA3", "SEE", "Makeup", "Other"]
+DEPTS = ["CSE", "ECE", "MECH", "ISE", "CIVIL", "EEE", "MBA", "MCA", "Basic Science"]
+SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"]
+
 # --- [NEW] VISUAL STYLING ENGINE ---
 def load_custom_css():
     st.markdown("""
@@ -88,24 +95,34 @@ def load_custom_css():
 
 load_custom_css()
 
-# Academic Constants
-BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
-COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
-EXAM_TYPES = ["IA1", "IA2", "IA3", "SEE", "Makeup", "Other"]
-DEPTS = ["CSE", "ECE", "MECH", "ISE", "CIVIL", "EEE", "MBA", "MCA", "Basic Science"]
-SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"]
-
 # --- 2. FIREBASE SETUP ---
-if not firebase_admin._apps:
-    try:
-        key_dict = dict(st.secrets["firestore"])
-        cred = credentials.Certificate(key_dict)
-        firebase_admin.initialize_app(cred)
-    except Exception as e:
-        st.error(f"🔥 Firebase Error: {e}. Check your secrets.toml file!")
-        st.stop()
+# Initialize DB as None initially
+db = None
 
-db = firestore.client()
+def init_firebase():
+    global db
+    if not firebase_admin._apps:
+        try:
+            # Check if secrets exist
+            if "firestore" in st.secrets:
+                key_dict = dict(st.secrets["firestore"])
+                cred = credentials.Certificate(key_dict)
+                firebase_admin.initialize_app(cred)
+                db = firestore.client()
+                return True
+            else:
+                st.error("⚠️ secrets.toml not found or missing [firestore] section.")
+                st.info("Please create .streamlit/secrets.toml with your Firebase service account key.")
+                return False
+        except Exception as e:
+            st.error(f"🔥 Firebase Initialization Error: {e}")
+            return False
+    else:
+        db = firestore.client()
+        return True
+
+# Initialize Firebase
+firebase_ready = init_firebase()
 
 # --- 3. SECURITY HELPER FUNCTIONS ---
 def hash_password(password):
@@ -117,13 +134,18 @@ def get_key_from_password(password, salt_type='new'):
     return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
 def login_user(username, password):
-    doc = db.collection("users").document(username).get()
-    if doc.exists:
-        u = doc.to_dict()
-        if u.get('password') == hash_password(password): return u
+    if not db: return None
+    try:
+        doc = db.collection("users").document(username).get()
+        if doc.exists:
+            u = doc.to_dict()
+            if u.get('password') == hash_password(password): return u
+    except Exception as e:
+        st.error(f"Login DB Error: {e}")
     return None
 
 def check_submission_window():
+    if not db: return True
     try:
         s = db.collection("config").document("settings").get()
         return s.to_dict().get('submission_window_open', True) if s.exists else True
@@ -256,9 +278,8 @@ if 'sections' not in st.session_state:
 if 'current_doc_id' not in st.session_state: st.session_state.current_doc_id = None
 if 'current_doc_status' not in st.session_state: st.session_state.current_doc_status = "NEW"
 
-# --- 6. PRO LOGIN SCREEN (Redesigned) ---
+# --- 6. PRO LOGIN SCREEN ---
 if not st.session_state.user:
-    # Use empty columns to center the content
     lc1, lc2, lc3 = st.columns([1, 1.5, 1]) 
     with lc2:
         with st.container():
@@ -274,16 +295,23 @@ if not st.session_state.user:
             u = st.text_input("Username", placeholder="e.g. FAC001")
             p = st.text_input("Password", type="password", placeholder="••••••••")
             
+            if not firebase_ready:
+                st.warning("DB Not Connected. Please setup secrets.toml")
+            
             b1, b2, b3 = st.columns([1, 5, 1])
             with b2:
-                if st.button("🔒 Secure Login", type="primary", use_container_width=True):
+                if st.button("🔒 Secure Login", type="primary", use_container_width=True, disabled=not firebase_ready):
                     user = login_user(u, p)
                     if user:
                         st.session_state.user = user
                         st.session_state.user['id'] = u
                         st.rerun()
                     else:
-                        st.error("Invalid Credentials")
+                        st.error("Invalid Credentials or User does not exist.")
+            
+            with st.expander("Setup / Debug Info"):
+                st.write("First time? You need to manually create an admin user in Firestore 'users' collection.")
+                st.code("ID: admin\nRole: admin\nPassword: (Use hash_password function locally to generate)")
     st.stop()
 
 # --- 7. SIDEBAR & LOGOUT ---
@@ -323,10 +351,9 @@ with st.sidebar:
                     if nu and np: db.collection("users").document(nu).set({'name':nn, 'password':hash_password(np), 'role':nr, 'department':nd}); st.success("Added!")
 
 # --- 8. DASHBOARD TABS ---
-# Custom CSS ensures tabs look cleaner
 t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
 
-# === TAB 1: INBOX (Redesigned with Badges) ===
+# === TAB 1: INBOX ===
 with t_inbox:
     st.markdown(f"### 📥 {role.capitalize()} Workspace")
     
@@ -341,11 +368,12 @@ with t_inbox:
         fc5.write("")
         if fc5.button("🔄"):
             docs = []
-            ref = db.collection("exams")
-            if role == 'faculty': docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
-            elif role == 'scrutinizer': docs = list(ref.where("status", "==", "SUBMITTED").stream())
-            elif role == 'approver': docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
-            elif role == 'admin': docs = list(ref.stream())
+            if db:
+                ref = db.collection("exams")
+                if role == 'faculty': docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
+                elif role == 'scrutinizer': docs = list(ref.where("status", "==", "SUBMITTED").stream())
+                elif role == 'approver': docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
+                elif role == 'admin': docs = list(ref.stream())
             st.session_state.inbox_cache = [d for d in docs]
     
     st.divider()
@@ -400,7 +428,7 @@ with t_inbox:
                         st.success("Loaded!")
                         st.rerun()
 
-# === TAB 2: EDITOR (Cleaned Up) ===
+# === TAB 2: EDITOR ===
 with t_edit:
     read_only = False
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
@@ -467,7 +495,7 @@ with t_edit:
     if role == 'faculty':
         if c1.button("💾 Save Draft"):
             if not d['courseCode']: st.error("Fill Header Details first!")
-            else:
+            elif db:
                 data = {
                     'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections,
                     'status': 'DRAFT', 'author_id': st.session_state.user['id'], 'author_name': st.session_state.user['name'],
@@ -480,24 +508,24 @@ with t_edit:
         if c2.button("📤 Submit for Review", type="primary"):
             if not current_id: st.error("Save first")
             elif not check_submission_window(): st.error("Window Closed")
-            else:
+            elif db:
                 db.collection("exams").document(current_id).update({'status': 'SUBMITTED'})
                 st.session_state.current_doc_status = "SUBMITTED"
                 st.success("Submitted!")
 
     if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
         comm = st.text_area("Comments")
-        if c1.button("Return for Revision"): db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
-        if c2.button("Approve & Forward", type="primary"): db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user['name']}); st.success("Approved"); st.rerun()
+        if c1.button("Return for Revision") and db: db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
+        if c2.button("Approve & Forward", type="primary") and db: db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user['name']}); st.success("Approved"); st.rerun()
 
     if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
-        if c3.button("✅ Final Publish", type="primary"): db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user['name']}); st.success("Published!"); st.rerun()
+        if c3.button("✅ Final Publish", type="primary") and db: db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user['name']}); st.success("Published!"); st.rerun()
 
     with st.expander("👁️ Live Preview"):
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html, height=800, scrolling=True)
 
-# === TAB 3: LIBRARY (Cleaned) ===
+# === TAB 3: LIBRARY ===
 with t_lib:
     st.header("📚 Exam Archive")
     
@@ -508,7 +536,9 @@ with t_lib:
         l_sem = lc3.selectbox("Sem", ["All"] + SEMESTERS, key='ls')
         l_type = lc4.selectbox("Type", ["All"] + EXAM_TYPES, key='lt')
     
-    docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
+    docs = []
+    if db:
+        docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
     
     for doc in docs:
         d = doc.to_dict()
@@ -537,13 +567,14 @@ with t_cal:
     if role == 'admin':
         with st.form("evt"):
             t = st.text_input("Title"); d = st.date_input("Date"); ty = st.selectbox("Tag", ["Exam", "Deadline", "Holiday"])
-            if st.form_submit_button("Add Event"): db.collection("events").add({'title':t, 'date':str(d), 'type':ty}); st.success("Added")
+            if st.form_submit_button("Add Event") and db: db.collection("events").add({'title':t, 'date':str(d), 'type':ty}); st.success("Added")
     
-    evs = db.collection("events").order_by("date").stream()
-    for e in evs:
-        v = e.to_dict()
-        icon = "🔴" if v['type'] == 'Exam' else "🟡" if v['type'] == 'Deadline' else "🟢"
-        st.write(f"{icon} **{v['date']}**: {v['title']}")
+    if db:
+        evs = db.collection("events").order_by("date").stream()
+        for e in evs:
+            v = e.to_dict()
+            icon = "🔴" if v['type'] == 'Exam' else "🟡" if v['type'] == 'Deadline' else "🟢"
+            st.write(f"{icon} **{v['date']}**: {v['title']}")
 
 # === TAB 5: BACKUP ===
 with t_bak:
