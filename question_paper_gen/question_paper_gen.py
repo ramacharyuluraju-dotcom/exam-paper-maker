@@ -95,7 +95,9 @@ def load_custom_css():
         .badge-revision {{ background: #fee2e2; color: #991b1b; }}
     </style>
     """, unsafe_allow_html=True)
-    
+
+load_custom_css()  
+
 # --- 2. FIREBASE SETUP ---
 # Initialize DB as None initially
 db = None
