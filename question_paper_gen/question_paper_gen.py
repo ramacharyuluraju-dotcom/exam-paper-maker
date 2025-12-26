@@ -12,6 +12,82 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 # --- 1. CONFIGURATION & CONSTANTS ---
 st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="🎓")
 
+# --- [NEW] VISUAL STYLING ENGINE ---
+def load_custom_css():
+    st.markdown("""
+    <style>
+        /* Global Font & Background */
+        .stApp {
+            background-color: #f4f6f9;
+            font-family: 'Inter', sans-serif;
+        }
+        
+        /* Headers */
+        h1, h2, h3 {
+            color: #1a202c;
+            font-weight: 700;
+        }
+
+        /* CARD STYLING: Applies to Expanders and Forms to look like cards */
+        div[data-testid="stExpander"], div[data-testid="stForm"] {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            border: 1px solid #e2e8f0;
+            margin-bottom: 1rem;
+            padding: 5px;
+        }
+        
+        /* Sidebar Styling */
+        section[data-testid="stSidebar"] {
+            background-color: #1e293b; /* Dark Slate */
+        }
+        section[data-testid="stSidebar"] h1 {
+            color: #f8fafc !important;
+        }
+        section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span, section[data-testid="stSidebar"] label {
+            color: #cbd5e1 !important;
+        }
+
+        /* Buttons */
+        button[kind="primary"] {
+            background-color: #2563eb !important; /* Royal Blue */
+            border: none;
+            transition: all 0.2s;
+        }
+        button[kind="primary"]:hover {
+            background-color: #1d4ed8 !important;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+        }
+
+        /* Status Badges (Custom HTML) */
+        .badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .badge-draft { background-color: #e2e8f0; color: #475569; }
+        .badge-submitted { background-color: #dbeafe; color: #1e40af; }
+        .badge-scrutinized { background-color: #ffedd5; color: #9a3412; }
+        .badge-approved { background-color: #dcfce7; color: #166534; }
+        .badge-revision { background-color: #fee2e2; color: #991b1b; }
+
+        /* Login Card Specifics */
+        .login-container {
+            padding: 40px;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+load_custom_css()
+
 # Academic Constants
 BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
 COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
@@ -180,28 +256,50 @@ if 'sections' not in st.session_state:
 if 'current_doc_id' not in st.session_state: st.session_state.current_doc_id = None
 if 'current_doc_status' not in st.session_state: st.session_state.current_doc_status = "NEW"
 
-# --- 6. LOGIN ---
+# --- 6. PRO LOGIN SCREEN (Redesigned) ---
 if not st.session_state.user:
-    c1, c2, c3 = st.columns([1,2,1])
-    with c2:
-        st.title("🔐 AMC Exam Portal")
-        u = st.text_input("Username")
-        p = st.text_input("Password", type="password")
-        if st.button("Log In", type="primary"):
-            user = login_user(u, p)
-            if user:
-                st.session_state.user = user; st.session_state.user['id'] = u; st.rerun()
-            else: st.error("Invalid Credentials")
+    # Use empty columns to center the content
+    lc1, lc2, lc3 = st.columns([1, 1.5, 1]) 
+    with lc2:
+        with st.container():
+            st.markdown("""
+            <div class="login-container">
+                <h1 style='margin-bottom:0;'>🎓 AMC Exam Portal</h1>
+                <p style='color:gray; font-size:14px;'>Secure Digital Examination System</p>
+                <hr style='margin: 20px 0;'>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Login Form
+            u = st.text_input("Username", placeholder="e.g. FAC001")
+            p = st.text_input("Password", type="password", placeholder="••••••••")
+            
+            b1, b2, b3 = st.columns([1, 5, 1])
+            with b2:
+                if st.button("🔒 Secure Login", type="primary", use_container_width=True):
+                    user = login_user(u, p)
+                    if user:
+                        st.session_state.user = user
+                        st.session_state.user['id'] = u
+                        st.rerun()
+                    else:
+                        st.error("Invalid Credentials")
     st.stop()
 
-# --- 7. SIDEBAR & LOGOUT FIX ---
+# --- 7. SIDEBAR & LOGOUT ---
 with st.sidebar:
     role = st.session_state.user.get('role', 'User').lower()
-    st.title(f"👤 {role.upper()}")
-    st.write(f"User: **{st.session_state.user.get('name')}**")
     
-    # --- FIX: CLEAR SESSION ON LOGOUT ---
-    if st.button("🚪 Log Out"):
+    # Avatar/Profile Section
+    st.markdown(f"""
+    <div style='text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 10px; margin-bottom: 20px;'>
+        <div style='font-size: 40px;'>👤</div>
+        <div style='color: white; font-weight: bold; margin-top: 5px;'>{st.session_state.user.get('name')}</div>
+        <div style='color: #94a3b8; font-size: 12px; text-transform: uppercase;'>{role}</div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if st.button("🚪 Log Out", use_container_width=True):
         st.session_state.clear()
         st.rerun()
     
@@ -212,41 +310,46 @@ with st.sidebar:
         with st.expander("Control Panel"):
             if check_submission_window():
                 st.success("🟢 Window OPEN")
-                if st.button("Close"): db.collection("config").document("settings").set({'submission_window_open': False}, merge=True); st.rerun()
+                if st.button("Close Window"): db.collection("config").document("settings").set({'submission_window_open': False}, merge=True); st.rerun()
             else:
                 st.error("🔴 Window CLOSED")
-                if st.button("Open"): db.collection("config").document("settings").set({'submission_window_open': True}, merge=True); st.rerun()
+                if st.button("Open Window"): db.collection("config").document("settings").set({'submission_window_open': True}, merge=True); st.rerun()
         
         with st.expander("Add User"):
             with st.form("new_u"):
                 nu = st.text_input("ID"); nn = st.text_input("Name"); np = st.text_input("Pass", type="password")
                 nr = st.selectbox("Role", ["faculty","scrutinizer","approver","admin"]); nd = st.selectbox("Dept", DEPTS)
-                if st.form_submit_button("Add"):
+                if st.form_submit_button("Create User"):
                     if nu and np: db.collection("users").document(nu).set({'name':nn, 'password':hash_password(np), 'role':nr, 'department':nd}); st.success("Added!")
 
 # --- 8. DASHBOARD TABS ---
+# Custom CSS ensures tabs look cleaner
 t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
 
-# === TAB 1: INBOX (Filters) ===
+# === TAB 1: INBOX (Redesigned with Badges) ===
 with t_inbox:
-    st.markdown(f"### 📥 {role.capitalize()} Inbox")
+    st.markdown(f"### 📥 {role.capitalize()} Workspace")
     
-    # Filters
-    fc1, fc2, fc3, fc4 = st.columns(4)
-    f_ay = fc1.selectbox("Academic Year", ["All", "2024-2025", "2025-2026", "2023-2024"])
-    f_dept = fc2.selectbox("Dept", ["All"] + DEPTS)
-    f_sem = fc3.selectbox("Sem", ["All"] + SEMESTERS)
-    f_type = fc4.selectbox("Exam", ["All"] + EXAM_TYPES)
+    # Filters in a styled container
+    with st.container():
+        fc1, fc2, fc3, fc4, fc5 = st.columns([2, 2, 2, 2, 1])
+        f_ay = fc1.selectbox("AY", ["All", "2024-2025", "2025-2026", "2023-2024"])
+        f_dept = fc2.selectbox("Dept", ["All"] + DEPTS)
+        f_sem = fc3.selectbox("Sem", ["All"] + SEMESTERS)
+        f_type = fc4.selectbox("Exam", ["All"] + EXAM_TYPES)
+        fc5.write("") 
+        fc5.write("")
+        if fc5.button("🔄"):
+            docs = []
+            ref = db.collection("exams")
+            if role == 'faculty': docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
+            elif role == 'scrutinizer': docs = list(ref.where("status", "==", "SUBMITTED").stream())
+            elif role == 'approver': docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
+            elif role == 'admin': docs = list(ref.stream())
+            st.session_state.inbox_cache = [d for d in docs]
+    
+    st.divider()
 
-    if st.button("🔄 Refresh Inbox"):
-        docs = []
-        ref = db.collection("exams")
-        if role == 'faculty': docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
-        elif role == 'scrutinizer': docs = list(ref.where("status", "==", "SUBMITTED").stream())
-        elif role == 'approver': docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
-        elif role == 'admin': docs = list(ref.stream())
-        st.session_state.inbox_cache = [d for d in docs]
-    
     if 'inbox_cache' in st.session_state:
         for doc in st.session_state.inbox_cache:
             d = doc.to_dict()
@@ -259,29 +362,51 @@ with t_inbox:
             if f_type != "All" and det.get('examType') != f_type: continue
 
             status = d.get('status', 'NEW')
-            color = {"DRAFT":"grey", "SUBMITTED":"blue", "REVISION":"red", "SCRUTINIZED":"orange", "APPROVED":"green"}.get(status, 'grey')
             
-            with st.expander(f"{det.get('courseCode')} | {det.get('examType')} | {status}"):
-                c1, c2 = st.columns([4, 1])
-                c1.write(f"**{det.get('courseName')}**")
-                c1.caption(f"{det.get('acadYear')} | {det.get('department')} | {det.get('semester')} Sem | {det.get('examDate')}")
-                if d.get('scrutiny_comments') and role == 'faculty': c1.error(f"Feedback: {d.get('scrutiny_comments')}")
-                
-                if c2.button("📂 Load", key=f"ld_{doc.id}"):
-                    st.session_state.exam_details = d['exam_details']
-                    st.session_state.sections = d['sections']
-                    st.session_state.current_doc_id = doc.id
-                    st.session_state.current_doc_status = status
-                    st.success("Loaded!"); st.rerun()
+            # Badge Logic
+            badge_class = "badge-draft"
+            if status == "SUBMITTED": badge_class = "badge-submitted"
+            elif status == "SCRUTINIZED": badge_class = "badge-scrutinized"
+            elif status == "APPROVED": badge_class = "badge-approved"
+            elif status == "REVISION": badge_class = "badge-revision"
 
-# === TAB 2: EDITOR (With Organization) ===
+            # Custom Card HTML
+            with st.expander(f""): # Empty title, using markdown inside
+                st.markdown(f"""
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div>
+                        <h4 style="margin:0;">{det.get('courseCode')} - {det.get('courseName')}</h4>
+                        <p style="margin:0; color:gray; font-size:13px;">{det.get('acadYear')} | {det.get('department')} | {det.get('examType')}</p>
+                    </div>
+                    <span class="badge {badge_class}">{status}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                st.write("") # Spacer
+                c1, c2 = st.columns([4, 1])
+                
+                with c1:
+                    if d.get('scrutiny_comments') and role == 'faculty': 
+                        st.error(f"⚠️ Feedback: {d.get('scrutiny_comments')}")
+                    else:
+                        st.caption(f"Last Modified: {d.get('created_at', 'Unknown')}")
+
+                with c2:
+                    if st.button("📂 Open", key=f"ld_{doc.id}", type="primary", use_container_width=True):
+                        st.session_state.exam_details = d['exam_details']
+                        st.session_state.sections = d['sections']
+                        st.session_state.current_doc_id = doc.id
+                        st.session_state.current_doc_status = status
+                        st.success("Loaded!")
+                        st.rerun()
+
+# === TAB 2: EDITOR (Cleaned Up) ===
 with t_edit:
     read_only = False
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
         st.warning("🔒 View Only Mode"); read_only = True
 
-    st.subheader("1. Organization & Metadata")
-    with st.container():
+    with st.expander("📝 Header Details", expanded=True):
         c1, c2, c3, c4 = st.columns(4)
         st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear', '2024-2025'), disabled=read_only)
         st.session_state.exam_details['department'] = c2.selectbox("Department", DEPTS, index=DEPTS.index(st.session_state.exam_details.get('department', 'CSE')) if st.session_state.exam_details.get('department') in DEPTS else 0, disabled=read_only)
@@ -293,41 +418,41 @@ with t_edit:
         st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=read_only)
         st.session_state.exam_details['courseName'] = c3.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=read_only)
 
-    st.divider()
+    st.markdown("#### Questions Editor")
     
-    st.subheader("2. Questions (Supports LaTeX Math: $x^2$)")
     for i, section in enumerate(st.session_state.sections):
-        st.markdown(f"**Block {i+1}**")
-        if section.get('isNote'):
-            c_del, c_txt = st.columns([1, 10])
-            if not read_only and c_del.button("❌", key=f"dels_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
-            section['text'] = c_txt.text_input("Instruction", section['text'], key=f"n_{section['id']}", disabled=read_only)
-        else:
-            h1, h2 = st.columns([10, 1])
-            if not read_only and h2.button("❌ Blk", key=f"dels_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
-            
-            for j, q in enumerate(section['questions']):
-                c1, c2 = st.columns([1, 8])
-                q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}", disabled=read_only)
-                q['text'] = c2.text_area("Question Text (Use $ for math)", q['text'], height=70, key=f"qt_{q['id']}", disabled=read_only)
+        with st.container(): # Creates a card for every section
+            st.markdown(f"**Block {i+1}**")
+            if section.get('isNote'):
+                c_del, c_txt = st.columns([1, 10])
+                if not read_only and c_del.button("🗑️", key=f"dels_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
+                section['text'] = c_txt.text_input("Instruction", section['text'], key=f"n_{section['id']}", disabled=read_only)
+            else:
+                h1, h2 = st.columns([10, 1])
+                if not read_only and h2.button("🗑️", key=f"dels_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
                 
-                if q['text'].upper() != 'OR':
-                    m1, m2, m3, m4 = st.columns([2,2,2,1])
-                    q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{q['id']}", disabled=read_only)
-                    q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}", disabled=read_only)
-                    q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{q['id']}", disabled=read_only)
-                    if not read_only and m4.button("❌", key=f"dq_{q['id']}"): section['questions'].pop(j); st.rerun()
-            
-            if not read_only and st.button("➕ Q", key=f"addq_{section['id']}"):
-                section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}); st.rerun()
-        st.divider()
+                for j, q in enumerate(section['questions']):
+                    c1, c2 = st.columns([1, 8])
+                    q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}", disabled=read_only)
+                    q['text'] = c2.text_area("Question Text (Use $ for math)", q['text'], height=70, key=f"qt_{q['id']}", disabled=read_only)
+                    
+                    if q['text'].upper() != 'OR':
+                        m1, m2, m3, m4 = st.columns([2,2,2,1])
+                        q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{q['id']}", disabled=read_only)
+                        q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}", disabled=read_only)
+                        q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{q['id']}", disabled=read_only)
+                        if not read_only and m4.button("❌", key=f"dq_{q['id']}"): section['questions'].pop(j); st.rerun()
+                
+                if not read_only and st.button("➕ Add Question", key=f"addq_{section['id']}"):
+                    section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}); st.rerun()
 
     if not read_only:
-        b1, b2 = st.columns(2)
-        if b1.button("➕ Question Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
-        if b2.button("➕ Instruction Note"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
+        st.divider()
+        b1, b2, b3 = st.columns([1, 1, 2])
+        if b1.button("➕ New Question Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
+        if b2.button("➕ Add Note/Instruction"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
 
-    # --- ACTIONS ---
+    # --- ACTIONS BAR ---
     st.markdown("### Actions")
     current_id = st.session_state.get('current_doc_id')
     
@@ -352,7 +477,7 @@ with t_edit:
                 st.session_state.current_doc_id = current_id
                 st.success(f"Saved: {current_id}")
 
-        if c2.button("📤 Submit", type="primary"):
+        if c2.button("📤 Submit for Review", type="primary"):
             if not current_id: st.error("Save first")
             elif not check_submission_window(): st.error("Window Closed")
             else:
@@ -362,26 +487,26 @@ with t_edit:
 
     if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
         comm = st.text_area("Comments")
-        if c1.button("Return"): db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
-        if c2.button("Approve"): db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user['name']}); st.success("Approved"); st.rerun()
+        if c1.button("Return for Revision"): db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
+        if c2.button("Approve & Forward", type="primary"): db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user['name']}); st.success("Approved"); st.rerun()
 
     if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
-        if c3.button("Final Approve"): db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user['name']}); st.success("Published!"); st.rerun()
+        if c3.button("✅ Final Publish", type="primary"): db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user['name']}); st.success("Published!"); st.rerun()
 
     with st.expander("👁️ Live Preview"):
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html, height=800, scrolling=True)
 
-# === TAB 3: LIBRARY (PDF Download) ===
+# === TAB 3: LIBRARY (Cleaned) ===
 with t_lib:
     st.header("📚 Exam Archive")
     
-    # Hierarchical Filter
-    lc1, lc2, lc3, lc4 = st.columns(4)
-    l_ay = lc1.selectbox("Year", ["All", "2024-2025", "2023-2024"], key='lay')
-    l_dept = lc2.selectbox("Dept", ["All"] + DEPTS, key='ld')
-    l_sem = lc3.selectbox("Sem", ["All"] + SEMESTERS, key='ls')
-    l_type = lc4.selectbox("Type", ["All"] + EXAM_TYPES, key='lt')
+    with st.container():
+        lc1, lc2, lc3, lc4 = st.columns(4)
+        l_ay = lc1.selectbox("Year", ["All", "2024-2025", "2023-2024"], key='lay')
+        l_dept = lc2.selectbox("Dept", ["All"] + DEPTS, key='ld')
+        l_sem = lc3.selectbox("Sem", ["All"] + SEMESTERS, key='ls')
+        l_type = lc4.selectbox("Type", ["All"] + EXAM_TYPES, key='lt')
     
     docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
     
@@ -396,16 +521,15 @@ with t_lib:
         if l_type != "All" and det.get('examType') != l_type: continue
         
         with st.expander(f"{det.get('acadYear')} | {det.get('courseName')} ({det.get('examType')})"):
-            st.write(f"**Date:** {det.get('examDate')} | **Author:** {d.get('author_name')}")
+            c1, c2 = st.columns([3, 1])
+            c1.write(f"**Date:** {det.get('examDate')} | **Author:** {d.get('author_name')}")
             
-            # --- PDF GENERATOR BUTTON ---
-            # We generate the full HTML, encode it to Base64, and create a clickable button.
-            # When clicked, it opens a clean print view where user hits Ctrl+P to save as PDF.
-            if st.button("🖨️ Prepare PDF", key=f"pdf_{doc.id}"):
-                html_content = generate_html(det, d['sections'])
-                b64 = base64.b64encode(html_content.encode()).decode()
-                href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}.html" target="_blank" style="text-decoration:none;"><button style="background-color:#4CAF50; color:white; padding:10px; border:none; cursor:pointer; font-size:16px;">📥 Click to Download / Print</button></a>'
-                st.markdown(href, unsafe_allow_html=True)
+            with c2:
+                if st.button("🖨️ PDF", key=f"pdf_{doc.id}", type="primary"):
+                    html_content = generate_html(det, d['sections'])
+                    b64 = base64.b64encode(html_content.encode()).decode()
+                    href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}.html" target="_blank" style="text-decoration:none;"><button style="background-color:#4CAF50; color:white; padding:10px; border:none; cursor:pointer; font-size:16px; border-radius:5px;">📥 Download / Print</button></a>'
+                    st.markdown(href, unsafe_allow_html=True)
 
 # === TAB 4: CALENDAR ===
 with t_cal:
@@ -413,7 +537,7 @@ with t_cal:
     if role == 'admin':
         with st.form("evt"):
             t = st.text_input("Title"); d = st.date_input("Date"); ty = st.selectbox("Tag", ["Exam", "Deadline", "Holiday"])
-            if st.form_submit_button("Add"): db.collection("events").add({'title':t, 'date':str(d), 'type':ty}); st.success("Added")
+            if st.form_submit_button("Add Event"): db.collection("events").add({'title':t, 'date':str(d), 'type':ty}); st.success("Added")
     
     evs = db.collection("events").order_by("date").stream()
     for e in evs:
@@ -423,14 +547,14 @@ with t_cal:
 
 # === TAB 5: BACKUP ===
 with t_bak:
-    st.header("💾 Backup")
+    st.header("💾 Backup & Restore")
     c1, c2 = st.columns(2)
     with c1:
-        st.caption("Plain JSON")
+        st.info("Plain JSON")
         js = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections})
         st.download_button("Download JSON", js, "backup.json")
     with c2:
-        st.caption("Encrypted")
+        st.warning("Encrypted")
         pw = st.text_input("Password", type="password", key="bpw")
         if pw:
             try:
@@ -440,7 +564,7 @@ with t_bak:
             except: pass
             
     st.divider()
-    up = st.file_uploader("Restore", type=['json', 'enc'])
+    up = st.file_uploader("Restore File", type=['json', 'enc'])
     if up:
         if up.name.endswith('.json'):
             if st.button("Load JSON"):
