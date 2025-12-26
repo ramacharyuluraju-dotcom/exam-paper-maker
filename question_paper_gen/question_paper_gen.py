@@ -19,100 +19,80 @@ EXAM_TYPES = ["IA1", "IA2", "IA3", "SEE", "Makeup", "Other"]
 DEPTS = ["CSE", "ECE", "MECH", "ISE", "CIVIL", "EEE", "MBA", "MCA", "Basic Science"]
 SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"]
 
-# --- [FIXED] VISUAL STYLING ENGINE ---
+# --- [UNIFIED FULL-PAGE THEME] ---
 def load_custom_css():
-    st.markdown("""
+    
+    # --- CHOOSE YOUR THEME HERE ---
+    # Light Orange: "#fff7ed" 
+    # Light Blue:   "#f0f9ff"
+    
+    theme_color = "#fff7ed"  # <--- Change this to "#f0f9ff" for Blue
+    
+    st.markdown(f"""
     <style>
-        /* 1. Global Background & Font - FORCE HIGH CONTRAST TEXT */
-        .stApp {
-            background-color: #f4f6f9;
+        /* 1. MAIN AREA (RIGHT SIDE) */
+        .stApp {{
+            background-color: {theme_color};
             font-family: 'Inter', sans-serif;
-            color: #000000 !important; /* Forces main text to be black */
-        }
-        
-        /* 2. Headers - Darker and Bolder */
-        h1, h2, h3, h4, h5, h6 {
-            color: #111827 !important; /* Near Black */
-            font-weight: 800 !important;
-        }
-        
-        /* 3. Paragraphs, Spans, Labels - Fixes "Disabled" look */
-        p, span, label, div[data-testid="stMarkdown"] {
-            color: #1f2937 !important; /* Dark Grey (High Contrast) */
-        }
-
-        /* 4. Input Boxes - Fixes faint text inside text areas/inputs */
-        input, textarea, select, div[data-baseweb="select"] {
             color: #000000 !important;
-            font-weight: 600 !important; /* Makes input text thicker */
-            background-color: #ffffff !important;
-        }
-
-        /* 5. CARD STYLING */
-        div[data-testid="stExpander"], div[data-testid="stForm"] {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-            border: 1px solid #cbd5e1; /* Slightly darker border for visibility */
-            margin-bottom: 1rem;
-            padding: 15px; /* Increased padding for better spacing */
-        }
+        }}
         
-        /* 6. Sidebar Styling - Fixes the faint text issue there */
-        section[data-testid="stSidebar"] {
-            background-color: #1e293b; /* Dark Slate */
-        }
+        /* 2. SIDEBAR (LEFT SIDE) - Now matches the main theme */
+        section[data-testid="stSidebar"] {{
+            background-color: {theme_color}; /* Same as main bg */
+            border-right: 1px solid rgba(0,0,0,0.05); /* Subtle separator line */
+        }}
+        
+        /* 3. SIDEBAR TEXT - Force Dark because bg is now light */
         section[data-testid="stSidebar"] h1, 
         section[data-testid="stSidebar"] h2, 
-        section[data-testid="stSidebar"] h3 {
-            color: #f8fafc !important; /* Bright White Headers */
-        }
-        /* Changed from #cbd5e1 (faint) to #e2e8f0 (bright white-grey) */
+        section[data-testid="stSidebar"] h3, 
         section[data-testid="stSidebar"] p, 
         section[data-testid="stSidebar"] span, 
-        section[data-testid="stSidebar"] label, 
-        section[data-testid="stSidebar"] div {
-            color: #e2e8f0 !important; 
-        }
+        section[data-testid="stSidebar"] label,
+        section[data-testid="stSidebar"] div {{
+            color: #1e293b !important; /* Dark Slate text */
+        }}
 
-        /* 7. Buttons */
-        button[kind="primary"] {
+        /* 4. HEADERS (Main Area) */
+        h1, h2, h3 {{
+            color: #1e293b !important; 
+            font-weight: 800 !important;
+        }}
+
+        /* 5. CARDS (White Islands) */
+        /* This keeps the "Exam Paper" or "Form" containers white so they stand out */
+        div[data-testid="stExpander"], div[data-testid="stForm"] {{
+            background: #ffffff;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+            border: 1px solid #cbd5e1;
+            padding: 20px;
+            margin-bottom: 1rem;
+        }}
+        
+        /* 6. INPUT FIELDS */
+        input, textarea, select {{
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border: 1px solid #cbd5e1;
+            font-weight: 600 !important;
+        }}
+        
+        /* 7. BUTTONS */
+        button[kind="primary"] {{
             background-color: #2563eb !important;
-            border: none;
             color: white !important;
-            font-weight: 700 !important;
-            transition: all 0.2s;
-        }
-        button[kind="primary"]:hover {
-            background-color: #1d4ed8 !important;
-            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
-        }
-
-        /* 8. Status Badges */
-        .badge {
-            padding: 4px 10px;
-            border-radius: 6px; /* Less rounded, looks more professional */
-            font-size: 13px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border: 1px solid rgba(0,0,0,0.1);
-        }
-        .badge-draft { background-color: #e2e8f0; color: #334155; }
-        .badge-submitted { background-color: #dbeafe; color: #1e40af; }
-        .badge-scrutinized { background-color: #ffedd5; color: #9a3412; }
-        .badge-approved { background-color: #dcfce7; color: #166534; }
-        .badge-revision { background-color: #fee2e2; color: #991b1b; }
-
-        /* 9. Login Container */
-        .login-container {
-            padding: 40px;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-            text-align: center;
-            border: 1px solid #e2e8f0;
-        }
+            border: none;
+        }}
+        
+        /* 8. BADGES */
+        .badge {{ padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; }}
+        .badge-draft {{ background: #e2e8f0; color: #334155; }}
+        .badge-submitted {{ background: #dbeafe; color: #1e40af; }}
+        .badge-scrutinized {{ background: #ffedd5; color: #9a3412; }}
+        .badge-approved {{ background: #dcfce7; color: #166534; }}
+        .badge-revision {{ background: #fee2e2; color: #991b1b; }}
     </style>
     """, unsafe_allow_html=True)
     
