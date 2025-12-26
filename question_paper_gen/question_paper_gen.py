@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 # --- 1. CONFIGURATION & CONSTANTS ---
 st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="🎓")
 
+# Academic Constants
 BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
 COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
 EXAM_TYPES = ["IA1", "IA2", "IA3", "SEE", "Makeup", "Other"]
@@ -52,9 +53,9 @@ def check_submission_window():
         return s.to_dict().get('submission_window_open', True) if s.exists else True
     except: return True
 
-# --- 4. HTML GENERATOR (Fixed Math & New Header) ---
+# --- 4. HTML GENERATOR (MathJax + Print Ready) ---
 def generate_html(details, sections):
-    # Auto-generate header text based on new metadata
+    # Auto-generate header text
     header_title = f"{details.get('examType', 'Exam')} - {details.get('semester', '')} Semester"
     
     usn_boxes = "".join(['<div class="box"></div>' for _ in range(10)])
@@ -67,7 +68,7 @@ def generate_html(details, sections):
                 if q['text'].strip().upper() == 'OR':
                     rows += "<tr><td colspan='5' style='text-align:center; font-weight:bold; background:#eee;'>OR</td></tr>"
                 else:
-                    # Replace newlines with breaks for HTML
+                    # Formatting text
                     txt = q['text'].replace('\n', '<br>')
                     rows += f"""
                     <tr>
@@ -101,6 +102,11 @@ def generate_html(details, sections):
         .box {{ width: 25px; height: 25px; border: 1px solid black; display: inline-block; margin-right: -1px; }}
         .sig-block {{ display: flex; justify-content: space-between; margin-top: 50px; text-align: center; font-size: 12px; }}
         .sig-line {{ border-top: 1px solid black; width: 150px; padding-top: 5px; font-weight: bold; }}
+        
+        @media print {{
+            body {{ padding: 0; }}
+            .paper {{ box-shadow: none; margin: 0; width: 100%; }}
+        }}
     </style>
     </head>
     <body>
@@ -156,14 +162,19 @@ def generate_html(details, sections):
 
 # --- 5. STATE MANAGEMENT ---
 if 'user' not in st.session_state: st.session_state.user = None
-if 'exam_details' not in st.session_state:
-    st.session_state.exam_details = {
+
+# Function to Initialize/Reset Exam Data
+def init_exam_data():
+    return {
         'instituteName': 'AMC ENGINEERING COLLEGE', 'subHeader': '(AUTONOMOUS)',
         'accreditation': 'NAAC A+ | NBA Accredited', 'department': 'Department of CSE',
         'acadYear': '2024-2025', 'semester': '5th', 'examType': 'IA1', 'examDate': str(datetime.date.today()),
         'courseName': '', 'courseCode': '', 'maxMarks': 50, 'duration': '90 Mins',
         'preparedBy': '', 'scrutinizedBy': '', 'approvedBy': ''
     }
+
+if 'exam_details' not in st.session_state:
+    st.session_state.exam_details = init_exam_data()
 if 'sections' not in st.session_state:
     st.session_state.sections = [{'id': 1, 'isNote': False, 'questions': [{'id': 101, 'qNo': '1.a', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}]}]
 if 'current_doc_id' not in st.session_state: st.session_state.current_doc_id = None
@@ -174,7 +185,8 @@ if not st.session_state.user:
     c1, c2, c3 = st.columns([1,2,1])
     with c2:
         st.title("🔐 AMC Exam Portal")
-        u = st.text_input("Username"); p = st.text_input("Password", type="password")
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
         if st.button("Log In", type="primary"):
             user = login_user(u, p)
             if user:
@@ -182,12 +194,17 @@ if not st.session_state.user:
             else: st.error("Invalid Credentials")
     st.stop()
 
-# --- 7. SIDEBAR ---
+# --- 7. SIDEBAR & LOGOUT FIX ---
 with st.sidebar:
     role = st.session_state.user.get('role', 'User').lower()
     st.title(f"👤 {role.upper()}")
     st.write(f"User: **{st.session_state.user.get('name')}**")
-    if st.button("Log Out"): st.session_state.user = None; st.rerun()
+    
+    # --- FIX: CLEAR SESSION ON LOGOUT ---
+    if st.button("🚪 Log Out"):
+        st.session_state.clear()
+        st.rerun()
+    
     st.divider()
     
     if role == 'admin':
@@ -210,11 +227,11 @@ with st.sidebar:
 # --- 8. DASHBOARD TABS ---
 t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
 
-# === TAB 1: INBOX (Smart Filtering) ===
+# === TAB 1: INBOX (Filters) ===
 with t_inbox:
     st.markdown(f"### 📥 {role.capitalize()} Inbox")
     
-    # Filter Row
+    # Filters
     fc1, fc2, fc3, fc4 = st.columns(4)
     f_ay = fc1.selectbox("Academic Year", ["All", "2024-2025", "2025-2026", "2023-2024"])
     f_dept = fc2.selectbox("Dept", ["All"] + DEPTS)
@@ -241,7 +258,6 @@ with t_inbox:
             if f_sem != "All" and det.get('semester') != f_sem: continue
             if f_type != "All" and det.get('examType') != f_type: continue
 
-            # UI Card
             status = d.get('status', 'NEW')
             color = {"DRAFT":"grey", "SUBMITTED":"blue", "REVISION":"red", "SCRUTINIZED":"orange", "APPROVED":"green"}.get(status, 'grey')
             
@@ -258,7 +274,7 @@ with t_inbox:
                     st.session_state.current_doc_status = status
                     st.success("Loaded!"); st.rerun()
 
-# === TAB 2: EDITOR (Organized & Math Ready) ===
+# === TAB 2: EDITOR (With Organization) ===
 with t_edit:
     read_only = False
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
@@ -311,23 +327,21 @@ with t_edit:
         if b1.button("➕ Question Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
         if b2.button("➕ Instruction Note"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
 
-    # --- ACTIONS & PREVIEW ---
+    # --- ACTIONS ---
     st.markdown("### Actions")
-    # Identify Loaded ID or Create New Composite ID
     current_id = st.session_state.get('current_doc_id')
     
-    # Construct ID if new: AY_DEPT_SEM_TYPE_CODE
+    # Auto-generate ID if not exists: AY_DEPT_SEM_TYPE_CODE
     if not current_id:
         d = st.session_state.exam_details
         if d['courseCode'] and d['department']:
-            # Example ID: 2024-25_CSE_5th_IA1_18CS51
             safe_ay = d['acadYear'].replace(" ", "")
             current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}"
 
     c1, c2, c3 = st.columns(3)
     if role == 'faculty':
         if c1.button("💾 Save Draft"):
-            if not current_id: st.error("Fill Header Details first!")
+            if not d['courseCode']: st.error("Fill Header Details first!")
             else:
                 data = {
                     'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections,
@@ -354,11 +368,11 @@ with t_edit:
     if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
         if c3.button("Final Approve"): db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user['name']}); st.success("Published!"); st.rerun()
 
-    with st.expander("👁️ Live Preview (Check Math)"):
+    with st.expander("👁️ Live Preview"):
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html, height=800, scrolling=True)
 
-# === TAB 3: LIBRARY (Global Archive) ===
+# === TAB 3: LIBRARY (PDF Download) ===
 with t_lib:
     st.header("📚 Exam Archive")
     
@@ -383,20 +397,24 @@ with t_lib:
         
         with st.expander(f"{det.get('acadYear')} | {det.get('courseName')} ({det.get('examType')})"):
             st.write(f"**Date:** {det.get('examDate')} | **Author:** {d.get('author_name')}")
-            if st.button("👁️ View Paper", key=f"vlib_{doc.id}"):
-                html = generate_html(det, d['sections'])
-                st.components.v1.html(html, height=800, scrolling=True)
+            
+            # --- PDF GENERATOR BUTTON ---
+            # We generate the full HTML, encode it to Base64, and create a clickable button.
+            # When clicked, it opens a clean print view where user hits Ctrl+P to save as PDF.
+            if st.button("🖨️ Prepare PDF", key=f"pdf_{doc.id}"):
+                html_content = generate_html(det, d['sections'])
+                b64 = base64.b64encode(html_content.encode()).decode()
+                href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}.html" target="_blank" style="text-decoration:none;"><button style="background-color:#4CAF50; color:white; padding:10px; border:none; cursor:pointer; font-size:16px;">📥 Click to Download / Print</button></a>'
+                st.markdown(href, unsafe_allow_html=True)
 
 # === TAB 4: CALENDAR ===
 with t_cal:
     st.header("📅 Academic Schedule")
-    # Only Admin adds events
     if role == 'admin':
         with st.form("evt"):
             t = st.text_input("Title"); d = st.date_input("Date"); ty = st.selectbox("Tag", ["Exam", "Deadline", "Holiday"])
             if st.form_submit_button("Add"): db.collection("events").add({'title':t, 'date':str(d), 'type':ty}); st.success("Added")
     
-    # Timeline
     evs = db.collection("events").order_by("date").stream()
     for e in evs:
         v = e.to_dict()
