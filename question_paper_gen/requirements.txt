@@ -1,3 +1,7 @@
 streamlit
 firebase-admin
 cryptography
+bcrypt
+pydantic
+pandas
+weasyprint
