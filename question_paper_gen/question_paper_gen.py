@@ -25,7 +25,7 @@ EXAM_TYPES = ["IA1", "IA2", "IA3", "SEE", "Makeup", "Other"]
 DEPTS = ["CSE", "ECE", "MECH", "ISE", "CIVIL", "EEE", "MBA", "MCA", "Basic Science"]
 SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"]
 
-# NEW: Pydantic Models for Validation
+# --- DATA VALIDATION MODELS ---
 class ExamDetails(BaseModel):
     instituteName: str = 'AMC ENGINEERING COLLEGE'
     subHeader: str = '(AUTONOMOUS)'
@@ -81,7 +81,7 @@ class Question(BaseModel):
             raise ValueError(f'Level must be one of {BLOOMS_LEVELS}')
         return v
 
-# --- [UNIFIED FULL-PAGE THEME] ---
+# --- UNIFIED THEME ---
 def load_custom_css():
     theme_color = "#fff7ed"  # Light Orange
     st.markdown(f"""
@@ -173,11 +173,10 @@ from html import escape
 def sanitize_input(text: str) -> str:
     return escape(str(text))
 
-# --- 4. HTML GENERATOR (MathJax + Print Ready) ---
+# --- 4. HTML GENERATOR ---
 def generate_html(details: dict, sections: list) -> str:
     details = {k: sanitize_input(v) for k, v in details.items() if isinstance(v, str)}
     
-    # Sanitization of sections
     clean_sections = []
     for sec in sections:
         clean_sec = sec.copy()
@@ -389,7 +388,7 @@ with st.sidebar:
                 if st.form_submit_button("Create User"):
                     if nu and np and db:
                         try:
-                            # Generate random salt for this user
+                            # Generate random salt for this user for backups
                             salt = os.urandom(16)
                             salt_b64 = base64.b64encode(salt).decode('utf-8')
                             
@@ -398,7 +397,7 @@ with st.sidebar:
                                 'password': hash_password(np), 
                                 'role': nr, 
                                 'department': nd,
-                                'salt': salt_b64  # Store salt for backup features
+                                'salt': salt_b64
                             })
                             st.success("User Added Successfully!")
                         except Exception as e:
