@@ -21,29 +21,25 @@ SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"]
 
 # --- [UNIFIED FULL-PAGE THEME] ---
 def load_custom_css():
-    
     # --- CHOOSE YOUR THEME HERE ---
-    # Light Orange: "#fff7ed" 
-    # Light Blue:   "#f0f9ff"
-    
-    theme_color = "#fff7ed"  # <--- Change this to "#f0f9ff" for Blue
+    theme_color = "#fff7ed"  # Light Orange
     
     st.markdown(f"""
     <style>
-        /* 1. MAIN AREA (RIGHT SIDE) */
+        /* 1. MAIN AREA */
         .stApp {{
             background-color: {theme_color};
             font-family: 'Inter', sans-serif;
             color: #000000 !important;
         }}
         
-        /* 2. SIDEBAR (LEFT SIDE) - Now matches the main theme */
+        /* 2. SIDEBAR */
         section[data-testid="stSidebar"] {{
-            background-color: {theme_color}; /* Same as main bg */
-            border-right: 1px solid rgba(0,0,0,0.05); /* Subtle separator line */
+            background-color: {theme_color};
+            border-right: 1px solid rgba(0,0,0,0.05);
         }}
         
-        /* 3. SIDEBAR TEXT - Force Dark because bg is now light */
+        /* 3. SIDEBAR TEXT */
         section[data-testid="stSidebar"] h1, 
         section[data-testid="stSidebar"] h2, 
         section[data-testid="stSidebar"] h3, 
@@ -51,17 +47,16 @@ def load_custom_css():
         section[data-testid="stSidebar"] span, 
         section[data-testid="stSidebar"] label,
         section[data-testid="stSidebar"] div {{
-            color: #1e293b !important; /* Dark Slate text */
+            color: #1e293b !important;
         }}
 
-        /* 4. HEADERS (Main Area) */
+        /* 4. HEADERS */
         h1, h2, h3 {{
             color: #1e293b !important; 
             font-weight: 800 !important;
         }}
 
         /* 5. CARDS (White Islands) */
-        /* This keeps the "Exam Paper" or "Form" containers white so they stand out */
         div[data-testid="stExpander"], div[data-testid="stForm"] {{
             background: #ffffff;
             border-radius: 12px;
@@ -99,14 +94,12 @@ def load_custom_css():
 load_custom_css()  
 
 # --- 2. FIREBASE SETUP ---
-# Initialize DB as None initially
 db = None
 
 def init_firebase():
     global db
     if not firebase_admin._apps:
         try:
-            # Check if secrets exist
             if "firestore" in st.secrets:
                 key_dict = dict(st.secrets["firestore"])
                 cred = credentials.Certificate(key_dict)
@@ -115,7 +108,6 @@ def init_firebase():
                 return True
             else:
                 st.error("⚠️ secrets.toml not found or missing [firestore] section.")
-                st.info("Please create .streamlit/secrets.toml with your Firebase service account key.")
                 return False
         except Exception as e:
             st.error(f"🔥 Firebase Initialization Error: {e}")
@@ -124,7 +116,6 @@ def init_firebase():
         db = firestore.client()
         return True
 
-# Initialize Firebase
 firebase_ready = init_firebase()
 
 # --- 3. SECURITY HELPER FUNCTIONS ---
@@ -156,7 +147,6 @@ def check_submission_window():
 
 # --- 4. HTML GENERATOR (MathJax + Print Ready) ---
 def generate_html(details, sections):
-    # Auto-generate header text
     header_title = f"{details.get('examType', 'Exam')} - {details.get('semester', '')} Semester"
     
     usn_boxes = "".join(['<div class="box"></div>' for _ in range(10)])
@@ -169,7 +159,6 @@ def generate_html(details, sections):
                 if q['text'].strip().upper() == 'OR':
                     rows += "<tr><td colspan='5' style='text-align:center; font-weight:bold; background:#eee;'>OR</td></tr>"
                 else:
-                    # Formatting text
                     txt = q['text'].replace('\n', '<br>')
                     rows += f"""
                     <tr>
@@ -264,7 +253,6 @@ def generate_html(details, sections):
 # --- 5. STATE MANAGEMENT ---
 if 'user' not in st.session_state: st.session_state.user = None
 
-# Function to Initialize/Reset Exam Data
 def init_exam_data():
     return {
         'instituteName': 'AMC ENGINEERING COLLEGE', 'subHeader': '(AUTONOMOUS)',
@@ -360,7 +348,6 @@ t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "�
 with t_inbox:
     st.markdown(f"### 📥 {role.capitalize()} Workspace")
     
-    # Filters in a styled container
     with st.container():
         fc1, fc2, fc3, fc4, fc5 = st.columns([2, 2, 2, 2, 1])
         f_ay = fc1.selectbox("AY", ["All", "2024-2025", "2025-2026", "2023-2024"])
@@ -401,8 +388,7 @@ with t_inbox:
             elif status == "APPROVED": badge_class = "badge-approved"
             elif status == "REVISION": badge_class = "badge-revision"
 
-            # Custom Card HTML
-            with st.expander(f""): # Empty title, using markdown inside
+            with st.expander(f""): 
                 st.markdown(f"""
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <div>
@@ -413,7 +399,7 @@ with t_inbox:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                st.write("") # Spacer
+                st.write("")
                 c1, c2 = st.columns([4, 1])
                 
                 with c1:
@@ -452,7 +438,7 @@ with t_edit:
     st.markdown("#### Questions Editor")
     
     for i, section in enumerate(st.session_state.sections):
-        with st.container(): # Creates a card for every section
+        with st.container():
             st.markdown(f"**Block {i+1}**")
             if section.get('isNote'):
                 c_del, c_txt = st.columns([1, 10])
