@@ -8,84 +8,24 @@ import base64
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import bcrypt  # NEW: Better password hashing (pip install bcrypt)
-from pydantic import BaseModel, validator  # NEW: Data validation (pip install pydantic)
-import pandas as pd  # NEW: For tabular exports
-from weasyprint import HTML  # NEW: For PDF export (pip install weasyprint)
-import io  # For in-memory PDF
+import pandas as pd  # Assuming available; if not, add to requirements.txt
+from html import escape  # Built-in, for sanitization
 
 # --- 1. CONFIGURATION & CONSTANTS ---
 st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="🎓")
 
-# Academic Constants
+# Academic Constants (unchanged)
 BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
 COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
 EXAM_TYPES = ["IA1", "IA2", "IA3", "SEE", "Makeup", "Other"]
 DEPTS = ["CSE", "ECE", "MECH", "ISE", "CIVIL", "EEE", "MBA", "MCA", "Basic Science"]
 SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"]
 
-# NEW: Pydantic Models for Validation
-class ExamDetails(BaseModel):
-    instituteName: str = 'AMC ENGINEERING COLLEGE'
-    subHeader: str = '(AUTONOMOUS)'
-    accreditation: str = 'NAAC A+ | NBA Accredited'
-    department: str
-    acadYear: str
-    semester: str
-    examType: str
-    examDate: str
-    courseName: str
-    courseCode: str
-    maxMarks: int = 50
-    duration: str = '90 Mins'
-    preparedBy: str = ''
-    scrutinizedBy: str = ''
-    approvedBy: str = ''
-
-    @validator('department')
-    def validate_dept(cls, v):
-        if v not in DEPTS:
-            raise ValueError(f'Department must be one of {DEPTS}')
-        return v
-
-    @validator('semester')
-    def validate_sem(cls, v):
-        if v not in SEMESTERS:
-            raise ValueError(f'Semester must be one of {SEMESTERS}')
-        return v
-
-    @validator('examType')
-    def validate_exam_type(cls, v):
-        if v not in EXAM_TYPES:
-            raise ValueError(f'Exam type must be one of {EXAM_TYPES}')
-        return v
-
-class Question(BaseModel):
-    id: int
-    qNo: str
-    text: str
-    marks: float = 0
-    co: str
-    level: str
-
-    @validator('co')
-    def validate_co(cls, v):
-        if not any(v.startswith(co) for co in COS_LIST):
-            raise ValueError(f'CO must start with one of {COS_LIST}')
-        return v
-
-    @validator('level')
-    def validate_level(cls, v):
-        if v not in BLOOMS_LEVELS:
-            raise ValueError(f'Level must be one of {BLOOMS_LEVELS}')
-        return v
-
-# --- [UNIFIED FULL-PAGE THEME] ---
+# --- [UNIFIED FULL-PAGE THEME] (IMPROVED: Added mobile CSS) ---
 def load_custom_css():
     theme_color = "#fff7ed"  # Light Orange
     st.markdown(f"""
     <style>
-        /* Existing CSS with added mobile responsiveness */
         .stApp {{ background-color: {theme_color}; font-family: 'Inter', sans-serif; color: #000000 !important; }}
         section[data-testid="stSidebar"] {{ background-color: {theme_color}; border-right: 1px solid rgba(0,0,0,0.05); }}
         section[data-testid="stSidebar"] * {{ color: #1e293b !important; }}
@@ -99,17 +39,20 @@ def load_custom_css():
         .badge-scrutinized {{ background: #ffedd5; color: #9a3412; }}
         .badge-approved {{ background: #dcfce7; color: #166534; }}
         .badge-revision {{ background: #fee2e2; color: #991b1b; }}
-        /* NEW: Mobile Responsiveness */
-        @media (max-width: 768px) {{ .stApp > div > div {{ flex-direction: column !important; }} input, select {{ width: 100% !important; }} }}
+        /* Mobile Responsiveness */
+        @media (max-width: 768px) {{ 
+            .stApp > div > div {{ flex-direction: column !important; }} 
+            input, select {{ width: 100% !important; }} 
+        }}
     </style>
     """, unsafe_allow_html=True)
 
 load_custom_css()
 
-# --- 2. FIREBASE SETUP ---
+# --- 2. FIREBASE SETUP (IMPROVED: Cached) ---
 db = None
 
-@st.cache_resource  # NEW: Cache Firebase init
+@st.cache_resource
 def init_firebase():
     global db
     if not firebase_admin._apps:
@@ -132,29 +75,18 @@ def init_firebase():
 
 firebase_ready = init_firebase()
 
-# --- 3. SECURITY HELPER FUNCTIONS (IMPROVED) ---
-# NEW: Use bcrypt for hashing (slower, salted)
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+# --- 3. SECURITY HELPER FUNCTIONS (Reverted to SHA-256; Added Sanitization) ---
+def hash_password(password):
+    return hashlib.sha256(str.encode(password)).hexdigest()
 
-def verify_password(password: str, hashed: str) -> bool:
-    return bcrypt.checkpw(password.encode(), hashed.encode())
-
-# NEW: Dynamic salt per user (store salt in Firestore)
-def get_key_from_password(password: str, salt: bytes = None) -> bytes:
-    if salt is None:
-        salt = b'dynamic_salt_for_amc_exam_app'  # Fallback
-    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
-    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
-
-def login_user(username: str, password: str):
+def login_user(username, password):
     if not db:
         return None
     try:
         doc = db.collection("users").document(username).get()
         if doc.exists:
             u = doc.to_dict()
-            if verify_password(password, u.get('password')):
+            if u.get('password') == hash_password(password):
                 return u
     except Exception as e:
         st.error(f"Login DB Error: {e}")
@@ -166,18 +98,17 @@ def check_submission_window():
     try:
         s = db.collection("config").document("settings").get()
         return s.to_dict().get('submission_window_open', True) if s.exists else True
-    except Exception as e:  # IMPROVED: Specific exception handling
+    except Exception as e:
         st.error(f"Config fetch error: {e}")
         return True
 
-# NEW: Input sanitization to prevent XSS
-from html import escape
+# Input sanitization (NEW: Prevents XSS)
 def sanitize_input(text: str) -> str:
     return escape(str(text))
 
-# --- 4. HTML GENERATOR (MathJax + Print Ready) ---
-def generate_html(details: dict, sections: list) -> str:
-    # Sanitize inputs
+# --- 4. HTML GENERATOR (IMPROVED: Sanitized Inputs) ---
+def generate_html(details, sections):
+    # Sanitize all user inputs
     details = {k: sanitize_input(v) for k, v in details.items()}
     for sec in sections:
         if 'text' in sec:
@@ -185,7 +116,7 @@ def generate_html(details: dict, sections: list) -> str:
         for q in sec.get('questions', []):
             q['text'] = sanitize_input(q['text'])
     
-    # Existing generation logic (unchanged for brevity)
+    # Rest of generation logic unchanged (for brevity)
     header_title = f"{details.get('examType', 'Exam')} - {details.get('semester', '')} Semester"
     usn_boxes = "".join(['<div class="box"></div>' for _ in range(10)])
     rows = ""
@@ -216,7 +147,6 @@ def generate_html(details: dict, sections: list) -> str:
     </script>
     <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
     <style>
-        /* Existing styles unchanged */
         body {{ font-family: 'Times New Roman', serif; padding: 40px; color: #000; }}
         .paper {{ width: 210mm; margin: 0 auto; background: white; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }}
@@ -276,37 +206,40 @@ def generate_html(details: dict, sections: list) -> str:
     </html>
     """
 
-# NEW: PDF Generator
-def generate_pdf(details: dict, sections: list) -> bytes:
-    html_content = generate_html(details, sections)
-    html = HTML(string=html_content)
-    pdf_file = io.BytesIO()
-    html.write_pdf(pdf_file)
-    return pdf_file.getvalue()
+# --- 5. STATE MANAGEMENT (IMPROVED: Simple Validation Helpers) ---
+if 'user' not in st.session_state: st.session_state.user = None
 
-# --- 5. STATE MANAGEMENT ---
-if 'user' not in st.session_state:
-    st.session_state.user = None
-
-# IMPROVED: Use Pydantic for exam data init
-def init_exam_data() -> dict:
-    return ExamDetails(department='CSE', acadYear='2024-2025', semester='5th', examType='IA1', examDate=str(datetime.date.today())).dict()
+def init_exam_data():
+    return {
+        'instituteName': 'AMC ENGINEERING COLLEGE', 'subHeader': '(AUTONOMOUS)',
+        'accreditation': 'NAAC A+ | NBA Accredited', 'department': 'CSE',
+        'acadYear': '2024-2025', 'semester': '5th', 'examType': 'IA1', 'examDate': str(datetime.date.today()),
+        'courseName': '', 'courseCode': '', 'maxMarks': 50, 'duration': '90 Mins',
+        'preparedBy': '', 'scrutinizedBy': '', 'approvedBy': ''
+    }
 
 if 'exam_details' not in st.session_state:
     st.session_state.exam_details = init_exam_data()
-
 if 'sections' not in st.session_state:
     st.session_state.sections = [{'id': 1, 'isNote': False, 'questions': [{'id': 101, 'qNo': '1.a', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}]}]
+if 'current_doc_id' not in st.session_state: st.session_state.current_doc_id = None
+if 'current_doc_status' not in st.session_state: st.session_state.current_doc_status = "NEW"
 
-if 'current_doc_id' not in st.session_state:
-    st.session_state.current_doc_id = None
+# Simple validation helper (NEW: Basic checks without Pydantic)
+def validate_exam_details(details):
+    errors = []
+    if details.get('department') not in DEPTS:
+        errors.append("Invalid department")
+    if details.get('semester') not in SEMESTERS:
+        errors.append("Invalid semester")
+    if details.get('examType') not in EXAM_TYPES:
+        errors.append("Invalid exam type")
+    if details.get('courseCode') == '':
+        errors.append("Course code required")
+    return errors
 
-if 'current_doc_status' not in st.session_state:
-    st.session_state.current_doc_status = "NEW"
-
-# --- 6. PRO LOGIN SCREEN ---
+# --- 6. PRO LOGIN SCREEN (Unchanged) ---
 if not st.session_state.user:
-    # Existing login UI (unchanged for brevity)
     lc1, lc2, lc3 = st.columns([1, 1.5, 1])
     with lc2:
         st.markdown("""
@@ -316,10 +249,13 @@ if not st.session_state.user:
             <hr style='margin: 20px 0;'>
         </div>
         """, unsafe_allow_html=True)
+       
         u = st.text_input("Username", placeholder="e.g. FAC001")
         p = st.text_input("Password", type="password", placeholder="••••••••")
+       
         if not firebase_ready:
             st.warning("DB Not Connected. Please setup secrets.toml")
+       
         b1, b2, b3 = st.columns([1, 5, 1])
         with b2:
             if st.button("🔒 Secure Login", type="primary", use_container_width=True, disabled=not firebase_ready):
@@ -330,13 +266,16 @@ if not st.session_state.user:
                     st.rerun()
                 else:
                     st.error("Invalid Credentials or User does not exist.")
+       
         with st.expander("Setup / Debug Info"):
-            st.write("First time? Create admin user in Firestore 'users' with bcrypt-hashed password.")
+            st.write("First time? You need to manually create an admin user in Firestore 'users' collection.")
+            st.code("ID: admin\nRole: admin\nPassword: (Use hash_password function locally to generate)")
     st.stop()
 
-# --- 7. SIDEBAR & LOGOUT ---
+# --- 7. SIDEBAR & LOGOUT (IMPROVED: Error Handling) ---
 with st.sidebar:
     role = st.session_state.user.get('role', 'User').lower()
+   
     st.markdown(f"""
     <div style='text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 10px; margin-bottom: 20px;'>
         <div style='font-size: 40px;'>👤</div>
@@ -344,38 +283,41 @@ with st.sidebar:
         <div style='color: #94a3b8; font-size: 12px; text-transform: uppercase;'>{role}</div>
     </div>
     """, unsafe_allow_html=True)
+   
     if st.button("🚪 Log Out", use_container_width=True):
         st.session_state.clear()
         st.rerun()
+   
     st.divider()
+   
     if role == 'admin':
         st.header("⚙️ Admin")
         with st.expander("Control Panel"):
             if check_submission_window():
                 st.success("🟢 Window OPEN")
                 if st.button("Close Window"):
-                    if db:
+                    try:
                         db.collection("config").document("settings").set({'submission_window_open': False}, merge=True)
                         st.rerun()
+                    except Exception as e:
+                        st.error(f"Error closing window: {e}")
             else:
                 st.error("🔴 Window CLOSED")
                 if st.button("Open Window"):
-                    if db:
+                    try:
                         db.collection("config").document("settings").set({'submission_window_open': True}, merge=True)
                         st.rerun()
+                    except Exception as e:
+                        st.error(f"Error opening window: {e}")
+       
         with st.expander("Add User"):
             with st.form("new_u"):
-                nu = st.text_input("ID")
-                nn = st.text_input("Name")
-                np = st.text_input("Pass", type="password")
-                nr = st.selectbox("Role", ["faculty", "scrutinizer", "approver", "admin"])
-                nd = st.selectbox("Dept", DEPTS)
+                nu = st.text_input("ID"); nn = st.text_input("Name"); np = st.text_input("Pass", type="password")
+                nr = st.selectbox("Role", ["faculty","scrutinizer","approver","admin"]); nd = st.selectbox("Dept", DEPTS)
                 if st.form_submit_button("Create User"):
-                    if nu and np and db:
+                    if nu and np:
                         try:
-                            db.collection("users").document(nu).set({
-                                'name': nn, 'password': hash_password(np), 'role': nr, 'department': nd
-                            })
+                            db.collection("users").document(nu).set({'name':nn, 'password':hash_password(np), 'role':nr, 'department':nd})
                             st.success("Added!")
                         except Exception as e:
                             st.error(f"User creation error: {e}")
@@ -383,8 +325,8 @@ with st.sidebar:
 # --- 8. DASHBOARD TABS ---
 t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
 
-# === TAB 1: INBOX (IMPROVED: Pagination & Caching) ===
-@st.cache_data(ttl=300)  # Cache for 5 min
+# === TAB 1: INBOX (IMPROVED: Caching, Pagination, Filters) ===
+@st.cache_data(ttl=300)  # Cache 5 min
 def fetch_inbox_docs(role: str, filters: dict) -> list:
     if not db:
         return []
@@ -397,38 +339,38 @@ def fetch_inbox_docs(role: str, filters: dict) -> list:
     elif role == 'approver':
         query = query.where("status", "==", "SCRUTINIZED")
     elif role == 'admin':
-        pass  # All
-    docs = list(query.limit(50).stream())  # NEW: Limit to 50 for pagination
-    # Apply client-side filters (ay, dept, etc.)
+        pass
+    docs = list(query.limit(50).stream())  # Limit reads
+    # Client-side filter
     filtered = []
     for doc in docs:
         d = doc.to_dict()
         det = d.get('exam_details', {})
-        if (filters.get('ay') == "All" or det.get('acadYear') == filters['ay']) and \
-           (filters.get('dept') == "All" or det.get('department') == filters['dept']) and \
-           (filters.get('sem') == "All" or det.get('semester') == filters['sem']) and \
-           (filters.get('type') == "All" or det.get('examType') == filters['type']):
+        if all(
+            filters.get(k) == "All" or det.get(k) == v
+            for k, v in filters.items()
+        ):
             filtered.append(doc)
     return filtered
 
 with t_inbox:
     st.markdown(f"### 📥 {role.capitalize()} Workspace")
+   
     fc1, fc2, fc3, fc4 = st.columns(4)
     f_ay = fc1.selectbox("AY", ["All", "2024-2025", "2025-2026", "2023-2024"])
     f_dept = fc2.selectbox("Dept", ["All"] + DEPTS)
     f_sem = fc3.selectbox("Sem", ["All"] + SEMESTERS)
     f_type = fc4.selectbox("Exam", ["All"] + EXAM_TYPES)
     if st.button("🔄 Refresh"):
-        st.cache_data.clear()  # Invalidate cache
-    filters = {'ay': f_ay, 'dept': f_dept, 'sem': f_sem, 'type': f_type}
+        st.cache_data.clear()
+    filters = {'acadYear': f_ay, 'department': f_dept, 'semester': f_sem, 'examType': f_type}
     docs = fetch_inbox_docs(role, filters)
     
-    # NEW: Simple pagination
+    # Pagination
     page_size = 10
     total_pages = (len(docs) + page_size - 1) // page_size
     page = st.slider("Page", 0, max(0, total_pages - 1), 0)
-    start = page * page_size
-    paginated_docs = docs[start:start + page_size]
+    paginated_docs = docs[page * page_size : (page + 1) * page_size]
     
     st.divider()
     if paginated_docs:
@@ -436,9 +378,12 @@ with t_inbox:
             d = doc.to_dict()
             det = d.get('exam_details', {})
             status = d.get('status', 'NEW')
-            badge_class = {"DRAFT": "badge-draft", "SUBMITTED": "badge-submitted", "SCRUTINIZED": "badge-scrutinized",
-                           "APPROVED": "badge-approved", "REVISION": "badge-revision"}.get(status, "badge-draft")
-            with st.expander(det.get('courseCode', 'Untitled')):
+            badge_class = {
+                "DRAFT": "badge-draft", "SUBMITTED": "badge-submitted", 
+                "SCRUTINIZED": "badge-scrutinized", "APPROVED": "badge-approved", 
+                "REVISION": "badge-revision"
+            }.get(status, "badge-draft")
+            with st.expander(f"{det.get('courseCode', 'Untitled')} - {det.get('courseName', 'N/A')}"):
                 st.markdown(f"""
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <div>
@@ -448,6 +393,7 @@ with t_inbox:
                     <span class="badge {badge_class}">{status}</span>
                 </div>
                 """, unsafe_allow_html=True)
+               
                 c1, c2 = st.columns([4, 1])
                 with c1:
                     if d.get('scrutiny_comments') and role == 'faculty':
@@ -463,37 +409,30 @@ with t_inbox:
                         st.success("Loaded!")
                         st.rerun()
     else:
-        st.info("No exams found matching filters.")
+        st.info("No exams found.")
 
-# === TAB 2: EDITOR (IMPROVED: Validation, Read-Only, Total Marks Calc) ===
+# === TAB 2: EDITOR (IMPROVED: Total Marks, Basic Validation) ===
 with t_edit:
     read_only = role in ['approver'] or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED'])
     if read_only:
         st.warning("🔒 View Only Mode")
     
     with st.expander("📝 Header Details", expanded=True):
-        form = st.form("header_form")
-        with form:
-            c1, c2, c3, c4 = st.columns(4)
-            ay = c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear', '2024-2025'), disabled=read_only)
-            dept = c2.selectbox("Department", DEPTS, index=DEPTS.index(st.session_state.exam_details.get('department', 'CSE')) if st.session_state.exam_details.get('department') in DEPTS else 0, disabled=read_only)
-            sem = c3.selectbox("Semester", SEMESTERS, index=SEMESTERS.index(st.session_state.exam_details.get('semester', '1st')) if st.session_state.exam_details.get('semester') in SEMESTERS else 0, disabled=read_only)
-            etype = c4.selectbox("Exam Type", EXAM_TYPES, index=EXAM_TYPES.index(st.session_state.exam_details.get('examType', 'IA1')) if st.session_state.exam_details.get('examType') in EXAM_TYPES else 0, disabled=read_only)
-            
-            c1, c2, c3 = st.columns(3)
-            edate = c1.date_input("Exam Date", value=datetime.datetime.strptime(st.session_state.exam_details.get('examDate', str(datetime.date.today())), "%Y-%m-%d").date(), disabled=read_only)
-            cc = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=read_only)
-            cn = c3.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=read_only)
-            
-            submitted = form.form_submit_button("Update Header")
-            if submitted and not read_only:
-                try:
-                    # Validate with Pydantic
-                    ed = ExamDetails(acadYear=ay, department=dept, semester=sem, examType=etype, examDate=str(edate), courseCode=cc, courseName=cn).dict()
-                    st.session_state.exam_details.update(ed)
-                    st.success("Header updated!")
-                except ValueError as e:
-                    st.error(f"Validation error: {e}")
+        c1, c2, c3, c4 = st.columns(4)
+        st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear', '2024-2025'), disabled=read_only)
+        st.session_state.exam_details['department'] = c2.selectbox("Department", DEPTS, index=DEPTS.index(st.session_state.exam_details.get('department', 'CSE')) if st.session_state.exam_details.get('department') in DEPTS else 0, disabled=read_only)
+        st.session_state.exam_details['semester'] = c3.selectbox("Semester", SEMESTERS, index=SEMESTERS.index(st.session_state.exam_details.get('semester', '1st')) if st.session_state.exam_details.get('semester') in SEMESTERS else 0, disabled=read_only)
+        st.session_state.exam_details['examType'] = c4.selectbox("Exam Type", EXAM_TYPES, index=EXAM_TYPES.index(st.session_state.exam_details.get('examType', 'IA1')) if st.session_state.exam_details.get('examType') in EXAM_TYPES else 0, disabled=read_only)
+       
+        c1, c2, c3 = st.columns(3)
+        st.session_state.exam_details['examDate'] = str(c1.date_input("Exam Date", value=datetime.datetime.strptime(st.session_state.exam_details.get('examDate', str(datetime.date.today())), "%Y-%m-%d").date(), disabled=read_only))
+        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=read_only)
+        st.session_state.exam_details['courseName'] = c3.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=read_only)
+    
+    # Basic validation on save (NEW)
+    errors = validate_exam_details(st.session_state.exam_details)
+    if errors:
+        st.error("Validation errors: " + "; ".join(errors))
     
     st.markdown("#### Questions Editor")
     total_marks = 0
@@ -511,14 +450,14 @@ with t_edit:
                 if not read_only and h2.button("🗑️", key=f"dels_{section['id']}"):
                     st.session_state.sections.pop(i)
                     st.rerun()
-                
+               
                 for j, q in enumerate(section['questions']):
                     c1, c2 = st.columns([1, 8])
                     q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}", disabled=read_only)
                     q['text'] = c2.text_area("Question Text (Use $ for math)", q['text'], height=70, key=f"qt_{q['id']}", disabled=read_only)
-                    
+                   
                     if q['text'].upper() != 'OR':
-                        m1, m2, m3, m4 = st.columns([2, 2, 2, 1])
+                        m1, m2, m3, m4 = st.columns([2,2,2,1])
                         q['marks'] = m1.number_input("M", float(q['marks']), min_value=0, key=f"mk_{q['id']}", disabled=read_only)
                         total_marks += q['marks']
                         q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}", disabled=read_only)
@@ -526,104 +465,86 @@ with t_edit:
                         if not read_only and m4.button("❌", key=f"dq_{q['id']}"):
                             section['questions'].pop(j)
                             st.rerun()
-                
+               
                 if not read_only and st.button("➕ Add Question", key=f"addq_{section['id']}"):
-                    section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo': '', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'})
+                    section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'})
                     st.rerun()
     
-    st.info(f"**Total Marks: {total_marks}**")  # NEW: Auto-calc
+    st.info(f"**Total Marks: {total_marks:.0f}**")  # NEW: Auto-calc total
     
     if not read_only:
         st.divider()
         b1, b2, b3 = st.columns([1, 1, 2])
         if b1.button("➕ New Question Block"):
-            st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo': '', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}]})
+            st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]})
             st.rerun()
         if b2.button("➕ Add Note/Instruction"):
             st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'})
             st.rerun()
     
-    # --- ACTIONS BAR (IMPROVED: Validation) ---
+    # Actions (IMPROVED: Check validation)
     st.markdown("### Actions")
     current_id = st.session_state.get('current_doc_id')
     d = st.session_state.exam_details
-    if not current_id and d.get('courseCode') and d.get('department'):
-        safe_ay = d['acadYear'].replace(" ", "")
-        current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}"
+    if not current_id:
+        if d['courseCode'] and d['department']:
+            safe_ay = d['acadYear'].replace(" ", "")
+            current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}"
     
     if not d.get('courseCode'):
-        st.error("⚠️ Fill Course Code in Header before saving!")
+        st.error("⚠️ Fill Course Code before saving!")
     
     c1, c2, c3 = st.columns(3)
     if role == 'faculty' and not read_only:
-        if c1.button("💾 Save Draft") and d.get('courseCode'):
+        if c1.button("💾 Save Draft") and not errors:
             if db:
+                data = {
+                    'exam_details': d, 'sections': st.session_state.sections,
+                    'status': 'DRAFT', 'author_id': st.session_state.user['id'], 'author_name': st.session_state.user['name'],
+                    'created_at': str(datetime.datetime.now())
+                }
                 try:
-                    # Validate questions
-                    for sec in st.session_state.sections:
-                        if not sec.get('isNote'):
-                            for q in sec['questions']:
-                                Question(**q)  # Raises if invalid
-                    data = {
-                        'exam_details': d, 'sections': st.session_state.sections,
-                        'status': 'DRAFT', 'author_id': st.session_state.user['id'], 'author_name': st.session_state.user['name'],
-                        'created_at': str(datetime.datetime.now())
-                    }
                     db.collection("exams").document(current_id).set(data)
                     st.session_state.current_doc_id = current_id
                     st.success(f"Saved: {current_id}")
-                except ValueError as e:
-                    st.error(f"Validation error: {e}")
-        if c2.button("📤 Submit for Review", type="primary") and current_id and check_submission_window():
+                except Exception as e:
+                    st.error(f"Save error: {e}")
+        if c2.button("📤 Submit for Review", type="primary") and current_id and not errors and check_submission_window():
             if db:
                 db.collection("exams").document(current_id).update({'status': 'SUBMITTED'})
                 st.session_state.current_doc_status = "SUBMITTED"
                 st.success("Submitted!")
-        else:
-            if not check_submission_window():
-                st.error("Submission window closed!")
+        elif not check_submission_window():
+            st.error("Submission window closed!")
     
+    # Other roles unchanged (for brevity)
     if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
         comm = st.text_area("Comments")
         if c1.button("Return for Revision") and db and current_id:
-            db.collection("exams").document(current_id).update({'status': 'REVISION', 'scrutiny_comments': comm})
+            db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm})
             st.session_state.current_doc_status = "REVISION"
             st.rerun()
         if c2.button("Approve & Forward", type="primary") and db and current_id:
-            db.collection("exams").document(current_id).update({
-                'status': 'SCRUTINIZED', 
-                'exam_details': firestore.SERVER_TIMESTAMP,  # Wait, fix: update nested
-                f"exam_details.scrutinizedBy": st.session_state.user['name']
-            })
+            db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user['name']})
             st.success("Approved")
             st.rerun()
-    
     if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
         if c3.button("✅ Final Publish", type="primary") and db and current_id:
-            db.collection("exams").document(current_id).update({
-                'status': 'APPROVED',
-                f"exam_details.approvedBy": st.session_state.user['name']
-            })
+            db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user['name']})
             st.success("Published!")
             st.rerun()
     
     with st.expander("👁️ Live Preview"):
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html, height=800, scrolling=True)
-        
-        # NEW: PDF Download
-        if st.button("🖨️ Download PDF"):
-            pdf_bytes = generate_pdf(st.session_state.exam_details, st.session_state.sections)
-            st.download_button("Download PDF", pdf_bytes, f"{d.get('courseCode', 'exam')}.pdf", "application/pdf")
 
-# === TAB 3: LIBRARY (IMPROVED: Export to CSV, Pagination) ===
+# === TAB 3: LIBRARY (IMPROVED: CSV Export, Pagination) ===
 @st.cache_data(ttl=300)
 def fetch_library_docs(filters: dict) -> list:
     if not db:
         return []
     query = db.collection("exams").where("status", "==", "APPROVED").limit(50)
     docs = list(query.stream())
-    # Filter client-side
     filtered = [doc for doc in docs if all(
         filters.get(k) == "All" or doc.to_dict().get('exam_details', {}).get(k) == v
         for k, v in filters.items()
@@ -632,6 +553,7 @@ def fetch_library_docs(filters: dict) -> list:
 
 with t_lib:
     st.header("📚 Exam Archive")
+   
     lc1, lc2, lc3, lc4 = st.columns(4)
     l_ay = lc1.selectbox("Year", ["All", "2024-2025", "2023-2024"], key='lay')
     l_dept = lc2.selectbox("Dept", ["All"] + DEPTS, key='ld')
@@ -640,16 +562,16 @@ with t_lib:
     filters = {'acadYear': l_ay, 'department': l_dept, 'semester': l_sem, 'examType': l_type}
     docs = fetch_library_docs(filters)
     
-    # Pagination similar to inbox
+    # Pagination
     page_size = 10
     total_pages = (len(docs) + page_size - 1) // page_size
     page = st.slider("Page", 0, max(0, total_pages - 1), 0)
     paginated_docs = docs[page * page_size : (page + 1) * page_size]
     
-    # NEW: Export to CSV
+    # NEW: CSV Export (uses pandas)
     if st.button("📊 Export to CSV"):
         export_data = []
-        for doc in docs:  # Use full list for export
+        for doc in docs:  # Full list for export (watch reads if >50)
             d = doc.to_dict()
             det = d.get('exam_details', {})
             export_data.append({
@@ -667,26 +589,26 @@ with t_lib:
         with st.expander(f"{det.get('acadYear')} | {det.get('courseName')} ({det.get('examType')})"):
             c1, c2 = st.columns([3, 1])
             c1.write(f"**Date:** {det.get('examDate')} | **Author:** {d.get('author_name')}")
+           
             with c2:
                 html_content = generate_html(det, d['sections'])
                 b64 = base64.b64encode(html_content.encode()).decode()
-                href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}.html" target="_blank"><button style="background-color:#4CAF50; color:white; padding:10px; border:none; cursor:pointer; font-size:16px; border-radius:5px;">📥 HTML</button></a>'
+                href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}.html" target="_blank" style="text-decoration:none;"><button style="background-color:#4CAF50; color:white; padding:10px; border:none; cursor:pointer; font-size:16px; border-radius:5px;">📥 Download / Print</button></a>'
                 st.markdown(href, unsafe_allow_html=True)
-                if st.button("PDF", key=f"pdf_{doc.id}"):
-                    pdf_bytes = generate_pdf(det, d['sections'])
-                    st.download_button("Download PDF", pdf_bytes, f"{det.get('courseCode')}.pdf", "application/pdf")
 
-# === TAB 4: CALENDAR (Unchanged for brevity) ===
+# === TAB 4: CALENDAR (Unchanged) ===
 with t_cal:
     st.header("📅 Academic Schedule")
     if role == 'admin':
         with st.form("evt"):
-            t = st.text_input("Title")
-            d = st.date_input("Date")
-            ty = st.selectbox("Tag", ["Exam", "Deadline", "Holiday"])
+            t = st.text_input("Title"); d = st.date_input("Date"); ty = st.selectbox("Tag", ["Exam", "Deadline", "Holiday"])
             if st.form_submit_button("Add Event") and db:
-                db.collection("events").add({'title': t, 'date': str(d), 'type': ty})
-                st.success("Added")
+                try:
+                    db.collection("events").add({'title':t, 'date':str(d), 'type':ty})
+                    st.success("Added")
+                except Exception as e:
+                    st.error(f"Event add error: {e}")
+   
     if db:
         evs = db.collection("events").order_by("date").stream()
         for e in evs:
@@ -694,7 +616,7 @@ with t_cal:
             icon = "🔴" if v['type'] == 'Exam' else "🟡" if v['type'] == 'Deadline' else "🟢"
             st.write(f"{icon} **{v['date']}**: {v['title']}")
 
-# === TAB 5: BACKUP (IMPROVED: Use dynamic salt from user) ===
+# === TAB 5: BACKUP (IMPROVED: Error Handling) ---
 with t_bak:
     st.header("💾 Backup & Restore")
     c1, c2 = st.columns(2)
@@ -705,15 +627,14 @@ with t_bak:
     with c2:
         st.warning("Encrypted")
         pw = st.text_input("Password", type="password", key="bpw")
-        if pw and st.session_state.user.get('salt'):  # NEW: Use user salt if available
+        if pw:
             try:
-                salt = base64.b64decode(st.session_state.user['salt'])
-                k = get_key_from_password(pw, salt)
+                k = get_key_from_password(pw)
                 enc = Fernet(k).encrypt(js.encode())
                 st.download_button("Download Encrypted", enc, "backup.enc")
             except Exception as e:
                 st.error(f"Encryption error: {e}")
-    
+           
     st.divider()
     up = st.file_uploader("Restore File", type=['json', 'enc'])
     if up:
@@ -732,11 +653,7 @@ with t_bak:
             if st.button("Unlock"):
                 try:
                     raw = up.read()
-                    if st.session_state.user.get('salt'):
-                        salt = base64.b64decode(st.session_state.user['salt'])
-                        k = get_key_from_password(pwu, salt)
-                    else:
-                        k = get_key_from_password(pwu)
+                    k = get_key_from_password(pwu)
                     decrypted = Fernet(k).decrypt(raw).decode()
                     d = json.loads(decrypted)
                     st.session_state.exam_details = d['exam_details']
@@ -744,8 +661,8 @@ with t_bak:
                     st.success("Loaded!")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Decrypt error: Wrong password or corrupted file. {e}")
+                    st.error(f"Decrypt error: Wrong password. {e}")
 
-# NEW: Footer
+# Footer (NEW)
 st.markdown("---")
-st.markdown("*Improved version: Added validation (Pydantic), bcrypt hashing, caching, pagination, PDF export, sanitization, and better error handling.*")
+st.markdown("*Downgraded for compatibility: Reverted bcrypt/Pydantic/WeasyPrint. Add to requirements.txt for full features.*")
