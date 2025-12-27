@@ -9,10 +9,11 @@ import os
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import bcrypt
-from pydantic import BaseModel, validator, ValidationError
-import pandas as pd
+import bcrypt  # pip install bcrypt
+from pydantic import BaseModel, validator, ValidationError  # pip install pydantic
+import pandas as pd  # pip install pandas
 import io
+from html import escape
 
 # --- SAFE IMPORT FOR WEASYPRINT ---
 # This prevents the app from crashing if system libraries are missing
@@ -177,7 +178,6 @@ def check_submission_window():
         st.error(f"Config fetch error: {e}")
         return True
 
-from html import escape
 def sanitize_input(text: str) -> str:
     return escape(str(text))
 
@@ -355,8 +355,31 @@ if not st.session_state.user:
                     st.rerun()
                 else:
                     st.error("Invalid Credentials or User does not exist.")
-        with st.expander("Setup / Debug Info"):
-            st.write("First time? Create admin user in Firestore 'users' with bcrypt-hashed password.")
+        
+        # --- FIRST TIME SETUP / RECOVERY BUTTON ---
+        st.markdown("---")
+        with st.expander("⚠️ First Time Setup (Click Here)"):
+            st.warning("Use this ONLY if you have NO users in the database yet.")
+            if st.button("Create Default Admin (admin / admin123)"):
+                if db:
+                    try:
+                        # 1. Generate a random salt for the user (needed for backups)
+                        salt = os.urandom(16)
+                        salt_b64 = base64.b64encode(salt).decode('utf-8')
+                        
+                        # 2. Create the admin document
+                        db.collection("users").document("admin").set({
+                            'name': 'System Admin', 
+                            'password': hash_password('admin123'),
+                            'role': 'admin', 
+                            'department': 'CSE',
+                            'salt': salt_b64
+                        })
+                        st.success("✅ User created! Login with: admin / admin123")
+                    except Exception as e:
+                        st.error(f"Error creating user: {e}")
+                else:
+                    st.error("Database not connected. Check secrets.toml")
     st.stop()
 
 # --- 7. SIDEBAR & LOGOUT ---
@@ -841,6 +864,3 @@ with t_bak:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Decrypt error: Wrong password or corrupted file. {e}")
-
-st.markdown("---")
-st.markdown("*Improved version: Added validation (Pydantic), bcrypt hashing, caching, pagination, safe PDF fallback, sanitization, and better error handling.*")
