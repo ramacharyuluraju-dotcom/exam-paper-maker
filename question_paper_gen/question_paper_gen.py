@@ -9,11 +9,19 @@ import os
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import bcrypt  # pip install bcrypt
-from pydantic import BaseModel, validator, ValidationError  # pip install pydantic
-import pandas as pd  # pip install pandas
-from weasyprint import HTML  # pip install weasyprint
+import bcrypt
+from pydantic import BaseModel, validator, ValidationError
+import pandas as pd
 import io
+
+# --- SAFE IMPORT FOR WEASYPRINT ---
+# This prevents the app from crashing if system libraries are missing
+try:
+    from weasyprint import HTML
+    PDF_AVAILABLE = True
+except (OSError, ImportError) as e:
+    PDF_AVAILABLE = False
+    print(f"PDF Generation Unavailable: {e}")
 
 # --- 1. CONFIGURATION & CONSTANTS ---
 st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="🎓")
@@ -283,6 +291,10 @@ def generate_html(details: dict, sections: list) -> str:
     """
 
 def generate_pdf(details: dict, sections: list) -> bytes:
+    if not PDF_AVAILABLE:
+        st.error("⚠️ PDF generation is unavailable. 'packages.txt' is missing system libraries (libpango).")
+        return b""
+        
     try:
         html_content = generate_html(details, sections)
         html = HTML(string=html_content)
@@ -388,7 +400,7 @@ with st.sidebar:
                 if st.form_submit_button("Create User"):
                     if nu and np and db:
                         try:
-                            # Generate random salt for this user for backups
+                            # Generate random salt for this user
                             salt = os.urandom(16)
                             salt_b64 = base64.b64encode(salt).decode('utf-8')
                             
@@ -684,12 +696,10 @@ with t_edit:
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html, height=800, scrolling=True)
         
-        if st.button("🖨️ Download PDF"):
+        if st.button("🖨️ Download PDF", disabled=not PDF_AVAILABLE):
             pdf_bytes = generate_pdf(st.session_state.exam_details, st.session_state.sections)
             if pdf_bytes:
                 st.download_button("Download PDF", pdf_bytes, f"{d.get('courseCode', 'exam')}.pdf", "application/pdf")
-            else:
-                st.error("Failed to generate PDF. Check if weasyprint is installed correctly.")
 
 # === TAB 3: LIBRARY ===
 @st.cache_data(ttl=300)
@@ -745,7 +755,7 @@ with t_lib:
                 b64 = base64.b64encode(html_content.encode()).decode()
                 href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}.html" target="_blank"><button style="background-color:#4CAF50; color:white; padding:10px; border:none; cursor:pointer; font-size:16px; border-radius:5px;">📥 HTML</button></a>'
                 st.markdown(href, unsafe_allow_html=True)
-                if st.button("PDF", key=f"pdf_{doc.id}"):
+                if st.button("PDF", key=f"pdf_{doc.id}", disabled=not PDF_AVAILABLE):
                     pdf_bytes = generate_pdf(det, d['sections'])
                     st.download_button("Download PDF", pdf_bytes, f"{det.get('courseCode')}.pdf", "application/pdf")
 
@@ -833,4 +843,4 @@ with t_bak:
                     st.error(f"Decrypt error: Wrong password or corrupted file. {e}")
 
 st.markdown("---")
-st.markdown("*Improved version: Added validation (Pydantic), bcrypt hashing, caching, pagination, PDF export, sanitization, and better error handling.*")
+st.markdown("*Improved version: Added validation (Pydantic), bcrypt hashing, caching, pagination, safe PDF fallback, sanitization, and better error handling.*")
