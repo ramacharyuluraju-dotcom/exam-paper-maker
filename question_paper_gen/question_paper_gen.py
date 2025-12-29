@@ -220,41 +220,88 @@ with st.sidebar:
 
     if role == 'admin':
         st.header("⚙️ Admin")
-        # --- EXAM CYCLE MANAGER ---
-        with st.expander("📅 Exam Cycle & Schedule"):
-            st.info("Upload Time Table CSV.")
+        
+        # --- EXAM CYCLE MANAGER (FIXED) ---
+        with st.expander("📅 Exam Cycle & Schedule", expanded=True):
+            st.info("Step 1: Upload Time Table CSV.")
+            
             with st.form("cycle_form"):
-                cy_id = st.text_input("Cycle ID (e.g. IA1_JAN2026)")
+                cy_id = st.text_input("Cycle ID (Required)", placeholder="e.g. IA1_JAN2025")
                 c1, c2 = st.columns(2)
-                d_start = c1.date_input("Starts")
-                d_end = c2.date_input("Ends")
-                up_csv = st.file_uploader("Upload CSV", type=['csv'], help="Cols: ExamCode, AY, Sem, Type, ExamDate, SubCode, SubName, Branch")
+                d_start = c1.date_input("Submission Start")
+                d_end = c2.date_input("Submission End")
                 
-                if st.form_submit_button("🚀 Launch Cycle"):
-                    if cy_id and up_csv and db:
+                # File Uploader
+                up_csv = st.file_uploader("Upload Schedule", type=['csv'])
+                
+                # Submit Button
+                submitted = st.form_submit_button("🚀 Launch Cycle")
+                
+                if submitted:
+                    if not db:
+                        st.error("❌ Database not connected.")
+                    elif not cy_id:
+                        st.error("❌ Please enter a Cycle ID (e.g., IA1_JAN2025).")
+                    elif not up_csv:
+                        st.error("❌ Please upload a CSV file.")
+                    else:
                         try:
+                            # 1. Read CSV
                             df = pd.read_csv(up_csv)
+                            
+                            # 2. Clean Column Names (Remove spaces)
+                            df.columns = df.columns.str.strip()
+                            
+                            # 3. Validate Columns
                             req_cols = ['ExamCode', 'AY', 'Sem', 'Type', 'ExamDate', 'SubCode', 'SubName', 'Branch']
-                            if not all(col in df.columns for col in req_cols):
-                                st.error(f"Missing columns. Required: {req_cols}")
+                            missing = [c for c in req_cols if c not in df.columns]
+                            
+                            if missing:
+                                st.error(f"❌ CSV is missing columns: {missing}")
+                                st.write("Found columns:", list(df.columns))
                             else:
+                                # 4. Fix Date Format (Critical Step)
+                                try:
+                                    df['ExamDate'] = pd.to_datetime(df['ExamDate']).dt.strftime('%Y-%m-%d')
+                                except Exception as e:
+                                    st.error(f"❌ Date Error in CSV: {e}")
+                                    st.stop()
+
+                                # 5. Upload to Firestore
                                 subjects_data = df.to_dict(orient='records')
-                                for s in subjects_data: s['ExamDate'] = str(s['ExamDate'])
+                                
                                 db.collection("exam_schedule").document(cy_id).set({
-                                    'cycle_id': cy_id, 'submission_start': str(d_start),
-                                    'submission_end': str(d_end), 'subjects': subjects_data,
+                                    'cycle_id': cy_id,
+                                    'submission_start': str(d_start),
+                                    'submission_end': str(d_end),
+                                    'subjects': subjects_data,
                                     'created_at': str(datetime.datetime.now())
                                 })
-                                st.success(f"Cycle {cy_id} Launched!")
-                        except Exception as e: st.error(f"CSV Error: {e}")
-        
+                                st.success(f"✅ Success! Cycle '{cy_id}' launched with {len(subjects_data)} subjects.")
+                                
+                        except Exception as e:
+                            st.error(f"❌ Critical Error: {e}")
+
+        # --- ADD USER SECTION ---
         with st.expander("Add User"):
             with st.form("new_u"):
-                nu = st.text_input("ID"); nn = st.text_input("Name"); np = st.text_input("Pass", type="password")
-                nr = st.selectbox("Role", ["faculty","scrutinizer","approver","admin"]); nd = st.selectbox("Dept", DEPTS)
-                if st.form_submit_button("Create") and db:
-                    db.collection("users").document(nu).set({'name':nn, 'password':hash_password(np), 'role':nr, 'department':nd})
-                    st.success("Added!")
+                nu = st.text_input("User ID (e.g. FAC001)")
+                nn = st.text_input("Full Name")
+                np = st.text_input("Password", type="password")
+                nr = st.selectbox("Role", ["faculty", "scrutinizer", "approver", "admin"])
+                nd = st.selectbox("Department", DEPTS)
+                
+                if st.form_submit_button("Create User"):
+                    if db and nu and np:
+                        db.collection("users").document(nu).set({
+                            'name': nn, 
+                            'password': hash_password(np), 
+                            'role': nr, 
+                            'department': nd
+                        })
+                        st.success(f"User {nn} ({nr}) created!")
+                    else:
+                        st.error("Missing ID or Password")
 
 # --- 8. DASHBOARD TABS ---
 t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
