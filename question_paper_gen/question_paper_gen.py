@@ -5,7 +5,7 @@ import hashlib
 import datetime
 import json
 import base64
-import pandas as pd  # <--- NEW IMPORT
+import pandas as pd
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -220,9 +220,9 @@ with st.sidebar:
 
     if role == 'admin':
         st.header("⚙️ Admin")
-        # --- UPGRADED: EXAM CYCLE MANAGER ---
+        # --- EXAM CYCLE MANAGER ---
         with st.expander("📅 Exam Cycle & Schedule"):
-            st.info("Upload Time Table CSV to open submission window.")
+            st.info("Upload Time Table CSV.")
             with st.form("cycle_form"):
                 cy_id = st.text_input("Cycle ID (e.g. IA1_JAN2026)")
                 c1, c2 = st.columns(2)
@@ -294,71 +294,84 @@ with t_inbox:
                     st.success("Loaded!")
                     st.rerun()
 
-# === TAB 2: EDITOR (UPGRADED) ===
+# === TAB 2: EDITOR (FIXED FACULTY LOGIC) ===
 with t_edit:
     read_only = False
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
         st.warning("🔒 View Only Mode"); read_only = True
 
-    # --- 1. HEADER DETAILS (SCHEDULE INTEGRATION) ---
+    # --- 1. HEADER DETAILS (FIXED) ---
     with st.expander("📝 Exam Header & Settings", expanded=True):
         
-        # LOGIC: Faculty must select from Schedule if creating NEW draft
         user_dept = st.session_state.user.get('department')
         
         if not read_only and role == 'faculty':
-            # Only show selector if we haven't locked a subject yet OR it's a new draft
             active_subjects = []
             if db:
-                today = str(datetime.date.today())
-                cycles = db.collection("exam_schedule").where("submission_start", "<=", today).where("submission_end", ">=", today).stream()
-                for cy in cycles:
-                    c_data = cy.to_dict()
-                    dept_subs = [s for s in c_data.get('subjects', []) if s.get('Branch') == user_dept]
-                    for ds in dept_subs:
-                        ds['_cycle_id'] = c_data['cycle_id']
-                        active_subjects.append(ds)
+                try:
+                    # FETCH ALL (Safety Fix: Avoids Firestore Index Error)
+                    all_cycles = db.collection("exam_schedule").stream()
+                    today = datetime.date.today()
+                    
+                    for cy in all_cycles:
+                        c_data = cy.to_dict()
+                        # Safe Date Parsing
+                        try:
+                            s_start = datetime.datetime.strptime(c_data.get('submission_start'), "%Y-%m-%d").date()
+                            s_end = datetime.datetime.strptime(c_data.get('submission_end'), "%Y-%m-%d").date()
+                            
+                            if s_start <= today <= s_end:
+                                dept_subs = [s for s in c_data.get('subjects', []) if s.get('Branch') == user_dept]
+                                for ds in dept_subs:
+                                    ds['_cycle_id'] = c_data['cycle_id']
+                                    active_subjects.append(ds)
+                        except Exception as e:
+                            # Skip bad dates but don't crash
+                            continue
+                except Exception as e:
+                    st.error(f"Schedule Load Error: {e}")
 
             if not active_subjects:
-                st.warning(f"No active submission window for {user_dept}.")
+                st.warning(f"No active exam cycles found for {user_dept} today.")
+                # Show disabled empty selectbox to prevent layout shifts
+                st.selectbox("📌 Select Scheduled Exam", ["No active exams"], disabled=True)
             else:
-                opts = ["-- Select Subject from Schedule --"] + [f"{s['SubCode']} : {s['SubName']} ({s['Type']} on {s['ExamDate']})" for s in active_subjects]
+                opts = ["-- Select Subject --"] + [f"{s['SubCode']} : {s['SubName']} ({s['Type']})" for s in active_subjects]
                 
-                # Pre-select if already in state
+                # Intelligent Pre-selection
                 curr_code = st.session_state.exam_details.get('courseCode')
                 curr_idx = 0
                 if curr_code:
                     for idx, s in enumerate(active_subjects):
-                        if s['SubCode'] == curr_code: curr_idx = idx + 1; break
+                        if s['SubCode'] == curr_code: 
+                            curr_idx = idx + 1
+                            break
                 
                 sel = st.selectbox("📌 Select Scheduled Exam", opts, index=curr_idx)
 
-                if sel and sel != "-- Select Subject from Schedule --":
+                # Logic to fill details when selection changes
+                if sel and sel != "-- Select Subject --":
                     chosen = active_subjects[opts.index(sel) - 1]
-                    # AUTO-FILL & LOCK from CSV
                     st.session_state.exam_details['acadYear'] = chosen.get('AY')
                     st.session_state.exam_details['semester'] = str(chosen.get('Sem'))
                     st.session_state.exam_details['examType'] = chosen.get('Type')
                     st.session_state.exam_details['courseCode'] = chosen.get('SubCode')
                     st.session_state.exam_details['courseName'] = chosen.get('SubName')
-                    st.session_state.exam_details['examDate'] = chosen.get('ExamDate') # <--- DATE OF EXAM FROM CSV
+                    st.session_state.exam_details['examDate'] = chosen.get('ExamDate')
                     st.session_state.exam_details['department'] = user_dept
 
         # DISPLAY FIELDS
-        # Row 1: Read-Only (Context)
         c1, c2, c3, c4 = st.columns(4)
         c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear'), disabled=True)
         c2.text_input("Department", st.session_state.exam_details.get('department'), disabled=True)
         c3.text_input("Semester", st.session_state.exam_details.get('semester'), disabled=True)
         c4.text_input("Exam Type", st.session_state.exam_details.get('examType'), disabled=True)
 
-        # Row 2: Read-Only (Subject & Date)
         c1, c2, c3 = st.columns([1, 1, 2])
-        c1.text_input("Exam Date (Fixed)", st.session_state.exam_details.get('examDate'), disabled=True, help="Date from Schedule")
+        c1.text_input("Exam Date (Fixed)", st.session_state.exam_details.get('examDate'), disabled=True)
         c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=True)
         c3.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=True)
 
-        # Row 3: EDITABLE (Duration & Max Marks)
         st.markdown("**⚙️ Paper Settings**")
         c1, c2 = st.columns(2)
         st.session_state.exam_details['duration'] = c1.text_input("Duration (e.g., 90 Mins)", st.session_state.exam_details.get('duration'), disabled=read_only)
