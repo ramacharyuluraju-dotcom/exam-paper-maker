@@ -16,9 +16,7 @@ st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="�
 # Academic Constants
 BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
 COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
-EXAM_TYPES = ["IA1", "IA2", "IA3", "SEE", "Makeup", "Other"]
 DEPTS = ["CSE", "ECE", "MECH", "ISE", "CIVIL", "EEE", "MBA", "MCA", "Basic Science"]
-SEMESTERS = ["1st", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"]
 
 # --- [THEME LOADING] ---
 def load_custom_css():
@@ -27,8 +25,6 @@ def load_custom_css():
     <style>
         .stApp {{ background-color: {theme_color}; color: #000000 !important; font-family: 'Inter', sans-serif; }}
         section[data-testid="stSidebar"] {{ background-color: {theme_color}; border-right: 1px solid rgba(0,0,0,0.05); }}
-        section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span {{ color: #1e293b !important; }}
-        h1, h2, h3 {{ color: #1e293b !important; font-weight: 800 !important; }}
         div[data-testid="stExpander"], div[data-testid="stForm"] {{
             background: #ffffff; border-radius: 12px;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); border: 1px solid #cbd5e1;
@@ -222,7 +218,7 @@ with st.sidebar:
         st.header("⚙️ Admin")
         
         # --- VIEW SCHEDULES (NEW) ---
-        with st.expander("📋 View Active Schedules"):
+        with st.expander("📋 View Active Schedules", expanded=True):
             if st.button("Refresh List"):
                 try:
                     sch_ref = db.collection("exam_schedule").stream()
@@ -232,12 +228,13 @@ with st.sidebar:
                         sd = s.to_dict()
                         st.markdown(f"**{sd.get('cycle_id')}**")
                         st.caption(f"📅 {sd.get('submission_start')} to {sd.get('submission_end')}")
+                        st.text(f"Subjects Loaded: {len(sd.get('subjects', []))}")
                         st.markdown("---")
-                    if not found: st.warning("No schedules uploaded yet.")
+                    if not found: st.warning("No schedules found in Database.")
                 except Exception as e: st.error(f"Error: {e}")
 
-        # --- EXAM CYCLE MANAGER (FIXED) ---
-        with st.expander("📅 Upload New Schedule", expanded=True):
+        # --- EXAM CYCLE MANAGER (SAFE UPLOAD) ---
+        with st.expander("📅 Upload New Schedule"):
             st.info("Step 1: Upload Time Table CSV.")
             
             with st.form("cycle_form"):
@@ -255,30 +252,41 @@ with st.sidebar:
                     elif not up_csv: st.error("❌ Please upload a CSV file.")
                     else:
                         try:
+                            # 1. READ CSV
                             df = pd.read_csv(up_csv)
-                            df.columns = df.columns.str.strip() # Clean Headers
                             
+                            # 2. CLEAN HEADERS
+                            df.columns = df.columns.str.strip()
                             req_cols = ['ExamCode', 'AY', 'Sem', 'Type', 'ExamDate', 'SubCode', 'SubName', 'Branch']
                             missing = [c for c in req_cols if c not in df.columns]
                             
                             if missing:
                                 st.error(f"❌ CSV missing columns: {missing}")
                             else:
-                                try:
-                                    df['ExamDate'] = pd.to_datetime(df['ExamDate']).dt.strftime('%Y-%m-%d')
-                                except Exception as e:
-                                    st.error(f"❌ Date Error in CSV: {e}"); st.stop()
-
+                                # 3. CRITICAL: FORCE ALL DATA TO STRINGS
+                                # This prevents Firestore from crashing on Numpy types
+                                df = df.astype(str)
+                                
+                                # 4. Convert to Dictionary
                                 subjects_data = df.to_dict(orient='records')
                                 
-                                db.collection("exam_schedule").document(cy_id).set({
+                                # 5. UPLOAD
+                                doc_ref = db.collection("exam_schedule").document(cy_id)
+                                doc_ref.set({
                                     'cycle_id': cy_id,
                                     'submission_start': str(d_start),
                                     'submission_end': str(d_end),
                                     'subjects': subjects_data,
                                     'created_at': str(datetime.datetime.now())
                                 })
-                                st.success(f"✅ Success! Cycle '{cy_id}' launched.")
+                                
+                                # 6. IMMEDIATE VERIFICATION
+                                chk = doc_ref.get()
+                                if chk.exists:
+                                    st.success(f"✅ VERIFIED: Cycle '{cy_id}' is saved in Database!")
+                                    st.write(f"Loaded {len(subjects_data)} subjects.")
+                                else:
+                                    st.error("❌ Upload reported success, but file was not found during verification.")
                                 
                         except Exception as e:
                             st.error(f"❌ Critical Error: {e}")
@@ -355,10 +363,14 @@ with t_edit:
                         found_cycle = True
                         c_data = cy.to_dict()
                         try:
-                            s_start = datetime.datetime.strptime(c_data.get('submission_start'), "%Y-%m-%d").date()
-                            s_end = datetime.datetime.strptime(c_data.get('submission_end'), "%Y-%m-%d").date()
+                            # SAFE DATE PARSING
+                            s_start_str = c_data.get('submission_start', '').split(' ')[0]
+                            s_end_str = c_data.get('submission_end', '').split(' ')[0]
                             
-                            # DEBUG: Check if we are in range
+                            s_start = datetime.datetime.strptime(s_start_str, "%Y-%m-%d").date()
+                            s_end = datetime.datetime.strptime(s_end_str, "%Y-%m-%d").date()
+                            
+                            # CHECK DATES
                             if s_start <= today <= s_end:
                                 # Clean the Branch comparison (Strip whitespace)
                                 dept_subs = [s for s in c_data.get('subjects', []) if s.get('Branch', '').strip() == user_dept.strip()]
