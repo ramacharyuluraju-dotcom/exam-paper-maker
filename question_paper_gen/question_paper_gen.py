@@ -6,6 +6,7 @@ import datetime
 import json
 import base64
 import pandas as pd
+import traceback
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -50,6 +51,7 @@ def init_firebase():
     if not firebase_admin._apps:
         try:
             if "firestore" in st.secrets:
+                # Force dictionary conversion
                 key_dict = dict(st.secrets["firestore"])
                 cred = credentials.Certificate(key_dict)
                 firebase_admin.initialize_app(cred)
@@ -217,72 +219,76 @@ with st.sidebar:
     if role == 'admin':
         st.header("⚙️ Admin")
         
-        # --- VIEW SCHEDULES (NEW) ---
-        with st.expander("📋 View Active Schedules", expanded=True):
-            if st.button("Refresh List"):
+        # --- FIX 1: AUTO-LOAD SCHEDULES (No Button) ---
+        with st.expander("📋 Active Schedules", expanded=True):
+            if db:
                 try:
                     sch_ref = db.collection("exam_schedule").stream()
-                    found = False
+                    schedules_found = False
                     for s in sch_ref:
-                        found = True
+                        schedules_found = True
                         sd = s.to_dict()
                         st.markdown(f"**{sd.get('cycle_id')}**")
-                        st.caption(f"📅 {sd.get('submission_start')} to {sd.get('submission_end')}")
-                        st.text(f"Subjects Loaded: {len(sd.get('subjects', []))}")
-                        st.markdown("---")
-                    if not found: st.warning("No schedules found in Database.")
-                except Exception as e: st.error(f"Error: {e}")
+                        st.caption(f"{sd.get('submission_start')} ➔ {sd.get('submission_end')}")
+                        st.text(f"Subjects: {len(sd.get('subjects', []))}")
+                        if st.button("🗑️", key=f"del_{s.id}"):
+                            db.collection("exam_schedule").document(s.id).delete()
+                            st.rerun()
+                        st.divider()
+                    if not schedules_found:
+                        st.caption("No active cycles.")
+                except Exception as e:
+                    st.error(f"DB Error: {e}")
 
-        # --- EXAM CYCLE MANAGER (FIXED) ---
+        # --- FIX 2: ROBUST UPLOAD ---
         with st.expander("📅 Upload New Schedule"):
-            st.info("Step 1: Upload Time Table CSV.")
+            st.info("Upload Time Table CSV.")
             
             with st.form("cycle_form"):
-                cy_id = st.text_input("Cycle ID (Required)", placeholder="e.g. IA1_JAN2025")
+                cy_id = st.text_input("Cycle ID", placeholder="e.g. IA1_JAN2025")
                 c1, c2 = st.columns(2)
-                d_start = c1.date_input("Submission Start")
-                d_end = c2.date_input("Submission End")
-                up_csv = st.file_uploader("Upload Schedule", type=['csv'])
+                d_start = c1.date_input("Start")
+                d_end = c2.date_input("End")
+                up_csv = st.file_uploader("CSV File", type=['csv'])
                 
-                submitted = st.form_submit_button("🚀 Launch Cycle")
+                submitted = st.form_submit_button("🚀 Upload & Verify")
                 
                 if submitted:
-                    if not db: st.error("❌ Database not connected.")
-                    elif not cy_id: st.error("❌ Please enter a Cycle ID.")
-                    elif not up_csv: st.error("❌ Please upload a CSV file.")
+                    if not db: st.error("No DB Connection")
+                    elif not cy_id or not up_csv: st.error("Fill all fields")
                     else:
                         try:
-                            # 1. READ CSV
+                            # 1. Read
                             df = pd.read_csv(up_csv)
-                            
-                            # 2. CLEAN HEADERS
                             df.columns = df.columns.str.strip()
-                            req_cols = ['ExamCode', 'AY', 'Sem', 'Type', 'ExamDate', 'SubCode', 'SubName', 'Branch']
-                            missing = [c for c in req_cols if c not in df.columns]
                             
-                            if missing:
-                                st.error(f"❌ CSV missing columns: {missing}")
+                            # 2. Sanitize using JSON (Crucial Fix)
+                            # This removes numpy types that crash Firestore
+                            clean_json_str = df.to_json(orient='records', date_format='iso')
+                            clean_subjects = json.loads(clean_json_str)
+                            
+                            # 3. Create Doc
+                            doc_data = {
+                                'cycle_id': cy_id,
+                                'submission_start': str(d_start),
+                                'submission_end': str(d_end),
+                                'subjects': clean_subjects,
+                                'created_at': str(datetime.datetime.now())
+                            }
+                            
+                            # 4. Upload
+                            doc_ref = db.collection("exam_schedule").document(cy_id)
+                            doc_ref.set(doc_data)
+                            
+                            # 5. Immediate Verify
+                            v_doc = doc_ref.get()
+                            if v_doc.exists:
+                                st.success(f"✅ Verified! Loaded {len(clean_subjects)} subjects.")
                             else:
-                                # 3. CLEAN DATA (CRITICAL FIX)
-                                df = df.astype(str) # Force everything to string
-                                df['ExamDate'] = pd.to_datetime(df['ExamDate']).dt.strftime('%Y-%m-%d') # Force strict date format
-                                
-                                subjects_data = df.to_dict(orient='records')
-                                
-                                # 4. UPLOAD
-                                doc_ref = db.collection("exam_schedule").document(cy_id)
-                                doc_ref.set({
-                                    'cycle_id': cy_id,
-                                    'submission_start': str(d_start),
-                                    'submission_end': str(d_end),
-                                    'subjects': subjects_data,
-                                    'created_at': str(datetime.datetime.now())
-                                })
-                                
-                                st.success(f"✅ Success! Cycle '{cy_id}' uploaded with {len(subjects_data)} subjects.")
+                                st.error("❌ Save failed silently.")
                                 
                         except Exception as e:
-                            st.error(f"❌ Critical Error: {e}")
+                            st.error(f"Error: {e}")
 
         with st.expander("Add User"):
             with st.form("new_u"):
@@ -298,9 +304,9 @@ t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "�
 # === TAB 1: INBOX ===
 with t_inbox:
     st.markdown(f"### 📥 {role.capitalize()} Inbox")
-    st.caption("This shows created exam papers. It will be empty until Faculty create drafts.")
+    st.caption("Refresh to see latest status updates.")
     
-    if st.button("🔄 Refresh Inbox"):
+    if st.button("🔄 Refresh Inbox") or 'inbox_cache' not in st.session_state:
         docs = []
         if db:
             ref = db.collection("exams")
@@ -312,7 +318,7 @@ with t_inbox:
 
     if 'inbox_cache' in st.session_state:
         if not st.session_state.inbox_cache:
-            st.info("📭 Inbox is empty. No exams found.")
+            st.info("📭 Inbox is empty.")
         for doc in st.session_state.inbox_cache:
             d = doc.to_dict()
             det = d.get('exam_details', {})
@@ -334,7 +340,7 @@ with t_inbox:
                     st.success("Loaded!")
                     st.rerun()
 
-# === TAB 2: EDITOR (DEBUGGED) ===
+# === TAB 2: EDITOR ===
 with t_edit:
     read_only = False
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
@@ -350,46 +356,25 @@ with t_edit:
                     all_cycles = db.collection("exam_schedule").stream()
                     today = datetime.date.today()
                     
-                    found_cycle = False
-                    
                     for cy in all_cycles:
-                        found_cycle = True
                         c_data = cy.to_dict()
                         try:
-                            # SAFE DATE PARSING
-                            s_start_str = c_data.get('submission_start', '').split(' ')[0]
-                            s_end_str = c_data.get('submission_end', '').split(' ')[0]
+                            # FIX 3: Safe Date Parsing
+                            s_start = datetime.datetime.strptime(c_data['submission_start'].split(' ')[0], "%Y-%m-%d").date()
+                            s_end = datetime.datetime.strptime(c_data['submission_end'].split(' ')[0], "%Y-%m-%d").date()
                             
-                            s_start = datetime.datetime.strptime(s_start_str, "%Y-%m-%d").date()
-                            s_end = datetime.datetime.strptime(s_end_str, "%Y-%m-%d").date()
-                            
-                            # CHECK DATES
                             if s_start <= today <= s_end:
-                                # Clean the Branch comparison (Strip whitespace)
-                                dept_subs = [s for s in c_data.get('subjects', []) if s.get('Branch', '').strip() == user_dept.strip()]
-                                
-                                for ds in dept_subs:
-                                    ds['_cycle_id'] = c_data['cycle_id']
-                                    active_subjects.append(ds)
-                            else:
-                                pass # Suppress warning for inactive cycles
-
-                        except Exception as e:
-                            pass # Suppress minor date parsing errors
-
-                    if not found_cycle:
-                        st.error("❌ No Exam Schedules found in Database. Please ask Admin to launch a cycle.")
-                    elif not active_subjects:
-                        st.warning(f"⚠️ Schedules exist, but none match Department '{user_dept}' within active dates.")
-
-                except Exception as e:
-                    st.error(f"Load Error: {e}")
+                                for s in c_data.get('subjects', []):
+                                    if str(s.get('Branch', '')).strip() == str(user_dept).strip():
+                                        s['_cycle_id'] = c_data['cycle_id']
+                                        active_subjects.append(s)
+                        except Exception: continue
+                except Exception: pass
 
             if not active_subjects:
-                st.selectbox("📌 Select Scheduled Exam", ["No exams available"], disabled=True)
+                st.caption(f"No active exams for {user_dept} today.")
             else:
-                opts = ["-- Select Subject --"] + [f"{s['SubCode']} : {s['SubName']} ({s['Type']})" for s in active_subjects]
-                
+                opts = ["-- Select --"] + [f"{s['SubCode']} : {s['SubName']}" for s in active_subjects]
                 curr_code = st.session_state.exam_details.get('courseCode')
                 curr_idx = 0
                 if curr_code:
@@ -400,15 +385,18 @@ with t_edit:
                 
                 sel = st.selectbox("📌 Select Scheduled Exam", opts, index=curr_idx)
 
-                if sel and sel != "-- Select Subject --":
+                if sel and sel != "-- Select --":
                     chosen = active_subjects[opts.index(sel) - 1]
-                    st.session_state.exam_details['acadYear'] = chosen.get('AY')
-                    st.session_state.exam_details['semester'] = str(chosen.get('Sem'))
-                    st.session_state.exam_details['examType'] = chosen.get('Type')
-                    st.session_state.exam_details['courseCode'] = chosen.get('SubCode')
-                    st.session_state.exam_details['courseName'] = chosen.get('SubName')
-                    st.session_state.exam_details['examDate'] = chosen.get('ExamDate')
-                    st.session_state.exam_details['department'] = user_dept
+                    st.session_state.exam_details.update({
+                        'acadYear': chosen.get('AY'),
+                        'semester': str(chosen.get('Sem')),
+                        'examType': chosen.get('Type'),
+                        'courseCode': chosen.get('SubCode'),
+                        'courseName': chosen.get('SubName'),
+                        'examDate': chosen.get('ExamDate'),
+                        'department': user_dept,
+                        'scheduleId': chosen.get('_cycle_id')
+                    })
 
         # DISPLAY FIELDS
         c1, c2, c3, c4 = st.columns(4)
@@ -418,7 +406,7 @@ with t_edit:
         c4.text_input("Exam Type", st.session_state.exam_details.get('examType'), disabled=True)
 
         c1, c2, c3 = st.columns([1, 1, 2])
-        c1.text_input("Exam Date (Fixed)", st.session_state.exam_details.get('examDate'), disabled=True)
+        c1.text_input("Exam Date", st.session_state.exam_details.get('examDate'), disabled=True)
         c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=True)
         c3.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=True)
 
@@ -427,7 +415,7 @@ with t_edit:
         st.session_state.exam_details['duration'] = c1.text_input("Duration (e.g., 90 Mins)", st.session_state.exam_details.get('duration'), disabled=read_only)
         st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only)
 
-    # --- 2. QUESTIONS EDITOR ---
+    # --- QUESTIONS EDITOR ---
     st.markdown("#### Questions Editor")
     for i, section in enumerate(st.session_state.sections):
         with st.container():
