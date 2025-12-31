@@ -342,9 +342,12 @@ with t_edit:
         user_dept = st.session_state.user.get('department')
         manual_entry = False
         
-        # --- DROPDOWN LOGIC (OPEN TO FACULTY & ADMIN, NO DEPT FILTER) ---
+        # --- DROPDOWN LOGIC ---
         if not read_only and role in ['faculty', 'admin']:
-            manual_entry = st.toggle("✍️ Enable Manual Entry (If Schedule is missing)", value=False)
+            # NEW TOGGLES FOR USABILITY
+            c_tog1, c_tog2 = st.columns(2)
+            manual_entry = c_tog1.toggle("✍️ Manual Entry (No Schedule)", value=False)
+            ignore_dates = c_tog2.checkbox("🗓️ Ignore Date Restrictions", value=True) # Checked by default to fix your issue
             
             if not manual_entry:
                 active_subjects = []
@@ -359,17 +362,16 @@ with t_edit:
                                 s_start = datetime.datetime.strptime(c_data['submission_start'].split(' ')[0], "%Y-%m-%d").date()
                                 s_end = datetime.datetime.strptime(c_data['submission_end'].split(' ')[0], "%Y-%m-%d").date()
                                 
-                                if s_start <= today <= s_end:
+                                # LOGIC: Add subject if date matches OR if user checked "Ignore Dates"
+                                if (s_start <= today <= s_end) or ignore_dates:
                                     for s in c_data.get('subjects', []):
-                                        # --- CHANGED: REMOVED DEPARTMENT FILTER ---
-                                        # Now adds ALL subjects regardless of Branch/Dept column
                                         s['_cycle_id'] = c_data['cycle_id']
                                         active_subjects.append(s)
                             except Exception: continue
                     except Exception: pass
 
                 if not active_subjects:
-                    st.warning("⚠️ No active exams found in current cycle.")
+                    st.warning("⚠️ No active exams found. Try checking 'Ignore Date Restrictions' above.")
                 else:
                     # Sort nicely by Name
                     active_subjects = sorted(active_subjects, key=lambda x: x.get('SubName', ''))
@@ -394,7 +396,6 @@ with t_edit:
                             'courseCode': chosen.get('SubCode'),
                             'courseName': chosen.get('SubName'),
                             'examDate': chosen.get('ExamDate'),
-                            # Keep user's dept for record, even if subject is from another dept
                             'department': user_dept, 
                             'scheduleId': chosen.get('_cycle_id')
                         })
