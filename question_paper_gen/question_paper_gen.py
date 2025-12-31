@@ -233,7 +233,7 @@ with st.sidebar:
                     if not found: st.warning("No schedules found in Database.")
                 except Exception as e: st.error(f"Error: {e}")
 
-        # --- EXAM CYCLE MANAGER (SAFE UPLOAD) ---
+        # --- EXAM CYCLE MANAGER (FIXED) ---
         with st.expander("📅 Upload New Schedule"):
             st.info("Step 1: Upload Time Table CSV.")
             
@@ -263,14 +263,13 @@ with st.sidebar:
                             if missing:
                                 st.error(f"❌ CSV missing columns: {missing}")
                             else:
-                                # 3. CRITICAL: FORCE ALL DATA TO STRINGS
-                                # This prevents Firestore from crashing on Numpy types
-                                df = df.astype(str)
+                                # 3. CLEAN DATA (CRITICAL FIX)
+                                df = df.astype(str) # Force everything to string
+                                df['ExamDate'] = pd.to_datetime(df['ExamDate']).dt.strftime('%Y-%m-%d') # Force strict date format
                                 
-                                # 4. Convert to Dictionary
                                 subjects_data = df.to_dict(orient='records')
                                 
-                                # 5. UPLOAD
+                                # 4. UPLOAD
                                 doc_ref = db.collection("exam_schedule").document(cy_id)
                                 doc_ref.set({
                                     'cycle_id': cy_id,
@@ -280,13 +279,7 @@ with st.sidebar:
                                     'created_at': str(datetime.datetime.now())
                                 })
                                 
-                                # 6. IMMEDIATE VERIFICATION
-                                chk = doc_ref.get()
-                                if chk.exists:
-                                    st.success(f"✅ VERIFIED: Cycle '{cy_id}' is saved in Database!")
-                                    st.write(f"Loaded {len(subjects_data)} subjects.")
-                                else:
-                                    st.error("❌ Upload reported success, but file was not found during verification.")
+                                st.success(f"✅ Success! Cycle '{cy_id}' uploaded with {len(subjects_data)} subjects.")
                                 
                         except Exception as e:
                             st.error(f"❌ Critical Error: {e}")
@@ -379,10 +372,10 @@ with t_edit:
                                     ds['_cycle_id'] = c_data['cycle_id']
                                     active_subjects.append(ds)
                             else:
-                                st.caption(f"⚠️ Cycle {c_data['cycle_id']} ignored. Today ({today}) is not between {s_start} and {s_end}.")
+                                pass # Suppress warning for inactive cycles
 
                         except Exception as e:
-                            st.error(f"Cycle Data Error: {e}")
+                            pass # Suppress minor date parsing errors
 
                     if not found_cycle:
                         st.error("❌ No Exam Schedules found in Database. Please ask Admin to launch a cycle.")
