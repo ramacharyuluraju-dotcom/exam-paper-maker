@@ -285,90 +285,166 @@ with st.sidebar:
 # --- 8. DASHBOARD TABS ---
 t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
 
-# === TAB 1: INBOX ===
+# === TAB 1: INBOX & DASHBOARD ===
 with t_inbox:
-    st.markdown(f"### 📥 {role.capitalize()} Inbox")
-    st.caption("Review exams from different departments here.")
+    # --- ADMIN DASHBOARD TOGGLE ---
+    view_mode = "List"
+    selected_cycle = None
     
-    # --- BRANCHING FILTER FOR ADMINS/APPROVERS ---
-    filter_dept = "All"
-    if role in ['admin', 'approver', 'scrutinizer']:
-        col_fil1, col_fil2 = st.columns([1, 4])
-        with col_fil1:
-            filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
-    
-    if st.button("🔄 Refresh Inbox") or 'inbox_cache' not in st.session_state:
-        docs = []
+    if role == 'admin':
+        c_mode, c_refresh = st.columns([6, 1])
+        with c_mode:
+            view_mode = st.radio("View Mode", ["📂 Inbox (Tasks)", "📊 Status Dashboard"], horizontal=True, label_visibility="collapsed")
+        with c_refresh:
+            if st.button("🔄"): st.session_state.inbox_cache = []
+
+    # ----------------------------------
+    # VIEW 1: STATUS DASHBOARD (ADMIN)
+    # ----------------------------------
+    if role == 'admin' and view_mode == "📊 Status Dashboard":
+        st.markdown("### 📊 Exam Cycle Compliance")
+        
+        # 1. Select Cycle
+        cycles = []
         if db:
-            ref = db.collection("exams")
-            # --- APPLYING BASIC ROLE FILTERS ---
-            if role == 'faculty': 
-                # Faculty sees only their own work
-                docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
-            elif role == 'scrutinizer': 
-                # Scrutinizer sees SUBMITTED
-                docs = list(ref.where("status", "==", "SUBMITTED").stream())
-            elif role == 'approver': 
-                # Approver sees SCRUTINIZED
-                docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
-            elif role == 'admin': 
-                # Admin sees EVERYTHING
-                docs = list(ref.stream())
-        st.session_state.inbox_cache = docs
-
-    # --- RENDER INBOX WITH DEPT BRANCHING ---
-    if 'inbox_cache' in st.session_state:
-        filtered_docs = []
-        for doc in st.session_state.inbox_cache:
-            d = doc.to_dict()
-            det = d.get('exam_details', {})
-            # Branching Logic: Filter by Department if selected
-            if filter_dept != "All" and det.get('department') != filter_dept:
-                continue
-            filtered_docs.append(doc)
-
-        if not filtered_docs: 
-            st.info(f"📭 No exams found for {filter_dept}.")
+            cycles = [d.id for d in db.collection("exam_schedule").stream()]
+        
+        if not cycles:
+            st.warning("No exam schedules found. Upload a schedule in the Sidebar first.")
         else:
-            for doc in filtered_docs:
+            sel_cycle = st.selectbox("Select Exam Cycle", cycles)
+            
+            if sel_cycle and db:
+                # 2. Fetch Data
+                # A. Get Expected Subjects from Schedule
+                sch_doc = db.collection("exam_schedule").document(sel_cycle).get()
+                expected_subjects = sch_doc.to_dict().get('subjects', [])
+                
+                # B. Get Actual Submissions from Exams Collection
+                # We filter exams that belong to this scheduleId
+                submitted_docs = list(db.collection("exams").where("exam_details.scheduleId", "==", sel_cycle).stream())
+                
+                # 3. Process Data
+                total_count = len(expected_subjects)
+                submitted_map = {} # Map Code -> Status
+                
+                for d in submitted_docs:
+                    data = d.to_dict()
+                    code = data['exam_details'].get('courseCode')
+                    status = data.get('status', 'NEW')
+                    # Prioritize higher status if duplicates exist
+                    submitted_map[code] = status
+
+                # 4. Classify Subjects
+                pending_list = []
+                completed_list = []
+                
+                for sub in expected_subjects:
+                    code = sub.get('SubCode')
+                    name = sub.get('SubName')
+                    dept = sub.get('Branch', 'Common')
+                    
+                    status = submitted_map.get(code, "PENDING")
+                    
+                    item = {"Code": code, "Name": name, "Dept": dept, "Status": status}
+                    
+                    if status == "PENDING" or status == "NEW":
+                        pending_list.append(item)
+                    else:
+                        completed_list.append(item)
+
+                # 5. Display Metrics
+                sub_count = len(completed_list)
+                progress = sub_count / total_count if total_count > 0 else 0
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Subjects", total_count)
+                m2.metric("Received", sub_count)
+                m3.metric("Pending", len(pending_list), delta_color="inverse")
+                
+                st.progress(progress)
+
+                # 6. Display Lists
+                c_pen, c_comp = st.columns(2)
+                
+                with c_pen:
+                    st.error(f"❌ Pending / Not Submitted ({len(pending_list)})")
+                    if pending_list:
+                        df_p = pd.DataFrame(pending_list)
+                        st.dataframe(df_p[['Code', 'Name', 'Dept']], hide_index=True, use_container_width=True)
+                    else:
+                        st.success("All subjects submitted!")
+
+                with c_comp:
+                    st.success(f"✅ Submitted / In Progress ({len(completed_list)})")
+                    if completed_list:
+                        # Add color coding for status
+                        df_c = pd.DataFrame(completed_list)
+                        st.dataframe(df_c, hide_index=True, use_container_width=True)
+                    else:
+                        st.info("No submissions yet.")
+
+    # ----------------------------------
+    # VIEW 2: STANDARD INBOX (TASK LIST)
+    # ----------------------------------
+    else:
+        st.markdown(f"### 📥 {role.capitalize()} Inbox")
+        
+        # --- BRANCHING FILTER FOR ADMINS/APPROVERS ---
+        filter_dept = "All"
+        if role in ['admin', 'approver', 'scrutinizer']:
+            col_fil1, col_fil2 = st.columns([1, 4])
+            with col_fil1:
+                filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
+        
+        if 'inbox_cache' not in st.session_state or st.session_state.inbox_cache == []:
+            docs = []
+            if db:
+                ref = db.collection("exams")
+                # --- APPLYING BASIC ROLE FILTERS ---
+                if role == 'faculty': 
+                    docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
+                elif role == 'scrutinizer': 
+                    docs = list(ref.where("status", "==", "SUBMITTED").stream())
+                elif role == 'approver': 
+                    docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
+                elif role == 'admin': 
+                    docs = list(ref.stream())
+            st.session_state.inbox_cache = docs
+
+        # --- RENDER INBOX WITH DEPT BRANCHING ---
+        if 'inbox_cache' in st.session_state:
+            filtered_docs = []
+            for doc in st.session_state.inbox_cache:
                 d = doc.to_dict()
                 det = d.get('exam_details', {})
-                status = d.get('status', 'NEW')
-                badge = "badge-draft"
-                if status == "SUBMITTED": badge = "badge-submitted"
-                elif status == "SCRUTINIZED": badge = "badge-scrutinized"
-                elif status == "APPROVED": badge = "badge-approved"
-                elif status == "REVISION": badge = "badge-revision"
+                if filter_dept != "All" and det.get('department') != filter_dept:
+                    continue
+                filtered_docs.append(doc)
 
-                with st.expander(f"{det.get('courseCode')} - {det.get('courseName')}"):
-                    st.markdown(f"<span class='badge {badge}'>{status}</span> | 🏢 <b>{det.get('department')}</b> | {det.get('examType')}", unsafe_allow_html=True)
-                    if d.get('scrutiny_comments'): st.error(f"Feedback: {d.get('scrutiny_comments')}")
-                    if st.button("📂 Open Editor", key=f"ld_{doc.id}"):
-                        st.session_state.exam_details = d['exam_details']
-                        st.session_state.sections = d['sections']
-                        st.session_state.current_doc_id = doc.id
-                        st.session_state.current_doc_status = status
-                        st.success("Loaded!")
-                        st.rerun()
+            if not filtered_docs: 
+                st.info(f"📭 No pending items for {filter_dept}.")
+            else:
+                for doc in filtered_docs:
+                    d = doc.to_dict()
+                    det = d.get('exam_details', {})
+                    status = d.get('status', 'NEW')
+                    badge = "badge-draft"
+                    if status == "SUBMITTED": badge = "badge-submitted"
+                    elif status == "SCRUTINIZED": badge = "badge-scrutinized"
+                    elif status == "APPROVED": badge = "badge-approved"
+                    elif status == "REVISION": badge = "badge-revision"
 
-# === TAB 2: EDITOR (UNRESTRICTED) ===
-with t_edit:
-    # --- RESET BUTTON ---
-    col_rst, col_fill = st.columns([1, 4])
-    if col_rst.button("🆕 New Exam / Reset"):
-        st.session_state.current_doc_id = None
-        st.session_state.current_doc_status = "NEW"
-        st.session_state.exam_details = init_exam_data()
-        st.session_state.sections = [{'id': 1, 'isNote': False, 'questions': [{'id': 101, 'qNo': '1.a', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}]}]
-        st.rerun()
-
-    read_only = False
-    if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
-        st.warning("🔒 View Only Mode (Exam Submitted)"); read_only = True
-
-    with st.expander("📝 Exam Header & Settings", expanded=True):
-        user_dept = st.session_state.user.get('department')
-        manual_entry = False
+                    with st.expander(f"{det.get('courseCode')} - {det.get('courseName')}"):
+                        st.markdown(f"<span class='badge {badge}'>{status}</span> | 🏢 <b>{det.get('department')}</b> | {det.get('examType')}", unsafe_allow_html=True)
+                        if d.get('scrutiny_comments'): st.error(f"Feedback: {d.get('scrutiny_comments')}")
+                        if st.button("📂 Open Editor", key=f"ld_{doc.id}"):
+                            st.session_state.exam_details = d['exam_details']
+                            st.session_state.sections = d['sections']
+                            st.session_state.current_doc_id = doc.id
+                            st.session_state.current_doc_status = status
+                            st.success("Loaded!")
+                            st.rerun()
         
         # --- DROPDOWN LOGIC ---
         if not read_only and role in ['faculty', 'admin']:
