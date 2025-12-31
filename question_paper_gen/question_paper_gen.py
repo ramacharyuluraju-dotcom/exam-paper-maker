@@ -347,7 +347,7 @@ with t_edit:
             # NEW TOGGLES FOR USABILITY
             c_tog1, c_tog2 = st.columns(2)
             manual_entry = c_tog1.toggle("✍️ Manual Entry (No Schedule)", value=False)
-            ignore_dates = c_tog2.checkbox("🗓️ Ignore Date Restrictions", value=True) # Checked by default to fix your issue
+            ignore_dates = c_tog2.checkbox("🗓️ Ignore Date Restrictions", value=True) 
             
             if not manual_entry:
                 active_subjects = []
@@ -396,7 +396,7 @@ with t_edit:
                             'courseCode': chosen.get('SubCode'),
                             'courseName': chosen.get('SubName'),
                             'examDate': chosen.get('ExamDate'),
-                            'department': user_dept, 
+                            'department': user_dept, # Default to user dept, but now editable below
                             'scheduleId': chosen.get('_cycle_id')
                         })
 
@@ -406,7 +406,10 @@ with t_edit:
         
         c1, c2, c3, c4 = st.columns(4)
         st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear'), disabled=input_disabled)
-        st.session_state.exam_details['department'] = c2.text_input("Department", st.session_state.exam_details.get('department'), disabled=input_disabled)
+        
+        # --- CHANGE: Department is now always editable unless Read Only ---
+        st.session_state.exam_details['department'] = c2.text_input("Department", st.session_state.exam_details.get('department'), disabled=read_only)
+        
         st.session_state.exam_details['semester'] = c3.text_input("Semester", st.session_state.exam_details.get('semester'), disabled=input_disabled)
         st.session_state.exam_details['examType'] = c4.text_input("Exam Type", st.session_state.exam_details.get('examType'), disabled=input_disabled)
 
@@ -415,10 +418,20 @@ with t_edit:
         st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=input_disabled)
         st.session_state.exam_details['courseName'] = c3.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=input_disabled)
 
-        st.markdown("**⚙️ Paper Settings**")
+        st.markdown("**⚙️ Paper Settings & Signatories**")
         c1, c2 = st.columns(2)
         st.session_state.exam_details['duration'] = c1.text_input("Duration", st.session_state.exam_details.get('duration'), disabled=read_only)
         st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only)
+
+        # --- CHANGE: Manual Signatory Fields ---
+        s1, s2, s3 = st.columns(3)
+        # Default Prepared By to current user if empty
+        def_prep = st.session_state.exam_details.get('preparedBy')
+        if not def_prep: def_prep = st.session_state.user['name']
+        
+        st.session_state.exam_details['preparedBy'] = s1.text_input("Prepared By", value=def_prep, disabled=read_only)
+        st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only)
+        st.session_state.exam_details['approvedBy'] = s3.text_input("Approved By", value=st.session_state.exam_details.get('approvedBy', ''), disabled=read_only)
 
     # --- QUESTIONS EDITOR ---
     st.markdown("#### Questions Editor")
@@ -480,7 +493,7 @@ with t_edit:
         if c2.button("📤 Submit for Review", type="primary"):
             if not current_id: st.error("Save Draft first")
             elif db:
-                db.collection("exams").document(current_id).update({'status': 'SUBMITTED', 'exam_details.preparedBy': st.session_state.user['name']})
+                db.collection("exams").document(current_id).update({'status': 'SUBMITTED', 'exam_details.preparedBy': st.session_state.exam_details.get('preparedBy')})
                 st.session_state.current_doc_status = "SUBMITTED"
                 st.success("Submitted successfully!")
 
