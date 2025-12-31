@@ -463,7 +463,10 @@ with t_edit:
         # --- SIGNATORIES ---
         s1, s2, s3 = st.columns(3)
         def_prep = st.session_state.exam_details.get('preparedBy')
-        if not def_prep: def_prep = st.session_state.user['name']
+        
+        # SAFETY FIX: use .get() to prevent crashing if 'name' is missing
+        if not def_prep and st.session_state.user:
+             def_prep = st.session_state.user.get('name', 'Faculty')
         
         st.session_state.exam_details['preparedBy'] = s1.text_input("Prepared By", value=def_prep, disabled=read_only)
         st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only)
