@@ -288,40 +288,68 @@ t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "�
 # === TAB 1: INBOX ===
 with t_inbox:
     st.markdown(f"### 📥 {role.capitalize()} Inbox")
-    st.caption("Refresh to see latest status updates.")
+    st.caption("Review exams from different departments here.")
+    
+    # --- BRANCHING FILTER FOR ADMINS/APPROVERS ---
+    filter_dept = "All"
+    if role in ['admin', 'approver', 'scrutinizer']:
+        col_fil1, col_fil2 = st.columns([1, 4])
+        with col_fil1:
+            filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
     
     if st.button("🔄 Refresh Inbox") or 'inbox_cache' not in st.session_state:
         docs = []
         if db:
             ref = db.collection("exams")
-            if role == 'faculty': docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
-            elif role == 'scrutinizer': docs = list(ref.where("status", "==", "SUBMITTED").stream())
-            elif role == 'approver': docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
-            elif role == 'admin': docs = list(ref.stream())
+            # --- APPLYING BASIC ROLE FILTERS ---
+            if role == 'faculty': 
+                # Faculty sees only their own work
+                docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
+            elif role == 'scrutinizer': 
+                # Scrutinizer sees SUBMITTED
+                docs = list(ref.where("status", "==", "SUBMITTED").stream())
+            elif role == 'approver': 
+                # Approver sees SCRUTINIZED
+                docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
+            elif role == 'admin': 
+                # Admin sees EVERYTHING
+                docs = list(ref.stream())
         st.session_state.inbox_cache = docs
 
+    # --- RENDER INBOX WITH DEPT BRANCHING ---
     if 'inbox_cache' in st.session_state:
-        if not st.session_state.inbox_cache: st.info("📭 Inbox is empty.")
+        filtered_docs = []
         for doc in st.session_state.inbox_cache:
             d = doc.to_dict()
             det = d.get('exam_details', {})
-            status = d.get('status', 'NEW')
-            badge = "badge-draft"
-            if status == "SUBMITTED": badge = "badge-submitted"
-            elif status == "SCRUTINIZED": badge = "badge-scrutinized"
-            elif status == "APPROVED": badge = "badge-approved"
-            elif status == "REVISION": badge = "badge-revision"
+            # Branching Logic: Filter by Department if selected
+            if filter_dept != "All" and det.get('department') != filter_dept:
+                continue
+            filtered_docs.append(doc)
 
-            with st.expander(f"{det.get('courseCode')} - {det.get('courseName')}"):
-                st.markdown(f"<span class='badge {badge}'>{status}</span> <b>{det.get('examType')}</b> ({det.get('examDate')})", unsafe_allow_html=True)
-                if d.get('scrutiny_comments'): st.error(f"Feedback: {d.get('scrutiny_comments')}")
-                if st.button("📂 Open", key=f"ld_{doc.id}"):
-                    st.session_state.exam_details = d['exam_details']
-                    st.session_state.sections = d['sections']
-                    st.session_state.current_doc_id = doc.id
-                    st.session_state.current_doc_status = status
-                    st.success("Loaded!")
-                    st.rerun()
+        if not filtered_docs: 
+            st.info(f"📭 No exams found for {filter_dept}.")
+        else:
+            for doc in filtered_docs:
+                d = doc.to_dict()
+                det = d.get('exam_details', {})
+                status = d.get('status', 'NEW')
+                badge = "badge-draft"
+                if status == "SUBMITTED": badge = "badge-submitted"
+                elif status == "SCRUTINIZED": badge = "badge-scrutinized"
+                elif status == "APPROVED": badge = "badge-approved"
+                elif status == "REVISION": badge = "badge-revision"
+
+                with st.expander(f"{det.get('courseCode')} - {det.get('courseName')}"):
+                    st.markdown(f"<span class='badge {badge}'>{status}</span> | 🏢 <b>{det.get('department')}</b> | {det.get('examType')}", unsafe_allow_html=True)
+                    if d.get('scrutiny_comments'): st.error(f"Feedback: {d.get('scrutiny_comments')}")
+                    if st.button("📂 Open Editor", key=f"ld_{doc.id}"):
+                        st.session_state.exam_details = d['exam_details']
+                        st.session_state.sections = d['sections']
+                        st.session_state.current_doc_id = doc.id
+                        st.session_state.current_doc_status = status
+                        st.success("Loaded!")
+                        st.rerun()
 
 # === TAB 2: EDITOR (UNRESTRICTED) ===
 with t_edit:
@@ -344,12 +372,18 @@ with t_edit:
         
         # --- DROPDOWN LOGIC ---
         if not read_only and role in ['faculty', 'admin']:
-            # NEW TOGGLES FOR USABILITY
             c_tog1, c_tog2 = st.columns(2)
             manual_entry = c_tog1.toggle("✍️ Manual Entry (No Schedule)", value=False)
             ignore_dates = c_tog2.checkbox("🗓️ Ignore Date Restrictions", value=True) 
             
             if not manual_entry:
+                # --- NEW BRANCHING SELECTOR FOR EDITOR ---
+                # Default to user's dept, but allow changing if Admin
+                dept_index = 0
+                if user_dept in DEPTS: dept_index = DEPTS.index(user_dept)
+                
+                sel_branch = st.selectbox("📂 Select Branch/Dept to View Subjects", DEPTS, index=dept_index)
+                
                 active_subjects = []
                 if db:
                     try:
@@ -362,21 +396,24 @@ with t_edit:
                                 s_start = datetime.datetime.strptime(c_data['submission_start'].split(' ')[0], "%Y-%m-%d").date()
                                 s_end = datetime.datetime.strptime(c_data['submission_end'].split(' ')[0], "%Y-%m-%d").date()
                                 
-                                # LOGIC: Add subject if date matches OR if user checked "Ignore Dates"
                                 if (s_start <= today <= s_end) or ignore_dates:
                                     for s in c_data.get('subjects', []):
-                                        s['_cycle_id'] = c_data['cycle_id']
-                                        active_subjects.append(s)
+                                        # Only add subjects if they match the selected branch
+                                        # (Assuming 'Branch' column exists in CSV, or vaguely matching logic)
+                                        # Fallback: We show all if Branch column is missing, otherwise filter
+                                        s_branch = s.get('Branch', '').upper()
+                                        if not s_branch or s_branch == sel_branch or s_branch in ["ALL", "COMMON"]:
+                                            s['_cycle_id'] = c_data['cycle_id']
+                                            active_subjects.append(s)
                             except Exception: continue
                     except Exception: pass
 
                 if not active_subjects:
-                    st.warning("⚠️ No active exams found. Try checking 'Ignore Date Restrictions' above.")
+                    st.warning(f"⚠️ No active exams found for {sel_branch}.")
                 else:
-                    # Sort nicely by Name
                     active_subjects = sorted(active_subjects, key=lambda x: x.get('SubName', ''))
                     
-                    opts = ["-- Select --"] + [f"{s.get('SubCode','?')} : {s.get('SubName','Unknown')} ({s.get('Branch','Global')})" for s in active_subjects]
+                    opts = ["-- Select --"] + [f"{s.get('SubCode','?')} : {s.get('SubName','Unknown')}" for s in active_subjects]
                     curr_code = st.session_state.exam_details.get('courseCode')
                     curr_idx = 0
                     if curr_code:
@@ -385,7 +422,7 @@ with t_edit:
                                 curr_idx = idx + 1
                                 break
                     
-                    sel = st.selectbox("📌 Select Scheduled Exam", opts, index=curr_idx)
+                    sel = st.selectbox("📌 Select Subject", opts, index=curr_idx)
 
                     if sel and sel != "-- Select --":
                         chosen = active_subjects[opts.index(sel) - 1]
@@ -396,7 +433,7 @@ with t_edit:
                             'courseCode': chosen.get('SubCode'),
                             'courseName': chosen.get('SubName'),
                             'examDate': chosen.get('ExamDate'),
-                            'department': user_dept, # Default to user dept, but now editable below
+                            'department': sel_branch, # Set department based on selection
                             'scheduleId': chosen.get('_cycle_id')
                         })
 
@@ -407,7 +444,7 @@ with t_edit:
         c1, c2, c3, c4 = st.columns(4)
         st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear'), disabled=input_disabled)
         
-        # --- CHANGE: Department is now always editable unless Read Only ---
+        # Department is now auto-filled from the Branch Selector above, but editable
         st.session_state.exam_details['department'] = c2.text_input("Department", st.session_state.exam_details.get('department'), disabled=read_only)
         
         st.session_state.exam_details['semester'] = c3.text_input("Semester", st.session_state.exam_details.get('semester'), disabled=input_disabled)
@@ -423,9 +460,8 @@ with t_edit:
         st.session_state.exam_details['duration'] = c1.text_input("Duration", st.session_state.exam_details.get('duration'), disabled=read_only)
         st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only)
 
-        # --- CHANGE: Manual Signatory Fields ---
+        # --- SIGNATORIES ---
         s1, s2, s3 = st.columns(3)
-        # Default Prepared By to current user if empty
         def_prep = st.session_state.exam_details.get('preparedBy')
         if not def_prep: def_prep = st.session_state.user['name']
         
