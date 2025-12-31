@@ -323,9 +323,9 @@ with t_inbox:
                     st.success("Loaded!")
                     st.rerun()
 
-# === TAB 2: EDITOR (UPDATED) ===
+# === TAB 2: EDITOR (UNRESTRICTED) ===
 with t_edit:
-    # --- RESET BUTTON TO FIX "VIEW ONLY" LOCK ---
+    # --- RESET BUTTON ---
     col_rst, col_fill = st.columns([1, 4])
     if col_rst.button("🆕 New Exam / Reset"):
         st.session_state.current_doc_id = None
@@ -342,13 +342,12 @@ with t_edit:
         user_dept = st.session_state.user.get('department')
         manual_entry = False
         
-        # --- DROPDOWN LOGIC ---
-        if not read_only and role == 'faculty':
+        # --- DROPDOWN LOGIC (OPEN TO FACULTY & ADMIN, NO DEPT FILTER) ---
+        if not read_only and role in ['faculty', 'admin']:
             manual_entry = st.toggle("✍️ Enable Manual Entry (If Schedule is missing)", value=False)
             
             if not manual_entry:
                 active_subjects = []
-                debug_info = []
                 if db:
                     try:
                         all_cycles = db.collection("exam_schedule").stream()
@@ -362,25 +361,25 @@ with t_edit:
                                 
                                 if s_start <= today <= s_end:
                                     for s in c_data.get('subjects', []):
-                                        # Check both "Branch" and "Department" just in case CSV headers vary
-                                        row_dept = str(s.get('Branch', s.get('Department', ''))).strip()
-                                        if row_dept.lower() == str(user_dept).strip().lower():
-                                            s['_cycle_id'] = c_data['cycle_id']
-                                            active_subjects.append(s)
-                            except Exception as e: 
-                                debug_info.append(f"Date Parse Error: {e}")
-                    except Exception as e: debug_info.append(f"DB Error: {e}")
+                                        # --- CHANGED: REMOVED DEPARTMENT FILTER ---
+                                        # Now adds ALL subjects regardless of Branch/Dept column
+                                        s['_cycle_id'] = c_data['cycle_id']
+                                        active_subjects.append(s)
+                            except Exception: continue
+                    except Exception: pass
 
                 if not active_subjects:
-                    st.warning(f"⚠️ No active exams found for Dept: **{user_dept}**.")
-                    st.caption("Common reasons: 1. Cycle dates don't include today. 2. CSV 'Branch' column doesn't match your Dept. 3. Use 'Enable Manual Entry' above to bypass.")
+                    st.warning("⚠️ No active exams found in current cycle.")
                 else:
-                    opts = ["-- Select --"] + [f"{s['SubCode']} : {s['SubName']}" for s in active_subjects]
+                    # Sort nicely by Name
+                    active_subjects = sorted(active_subjects, key=lambda x: x.get('SubName', ''))
+                    
+                    opts = ["-- Select --"] + [f"{s.get('SubCode','?')} : {s.get('SubName','Unknown')} ({s.get('Branch','Global')})" for s in active_subjects]
                     curr_code = st.session_state.exam_details.get('courseCode')
                     curr_idx = 0
                     if curr_code:
                         for idx, s in enumerate(active_subjects):
-                            if s['SubCode'] == curr_code: 
+                            if s.get('SubCode') == curr_code: 
                                 curr_idx = idx + 1
                                 break
                     
@@ -395,11 +394,12 @@ with t_edit:
                             'courseCode': chosen.get('SubCode'),
                             'courseName': chosen.get('SubName'),
                             'examDate': chosen.get('ExamDate'),
-                            'department': user_dept,
+                            # Keep user's dept for record, even if subject is from another dept
+                            'department': user_dept, 
                             'scheduleId': chosen.get('_cycle_id')
                         })
 
-        # --- INPUT FIELDS (LOCKED UNLESS MANUAL MODE) ---
+        # --- INPUT FIELDS ---
         input_disabled = True
         if manual_entry and not read_only: input_disabled = False
         
@@ -463,7 +463,7 @@ with t_edit:
         current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}"
 
     c1, c2, c3 = st.columns(3)
-    if role == 'faculty':
+    if role in ['faculty', 'admin']:
         if c1.button("💾 Save Draft"):
             if not d['courseCode']: st.error("Select a subject first.")
             elif db:
