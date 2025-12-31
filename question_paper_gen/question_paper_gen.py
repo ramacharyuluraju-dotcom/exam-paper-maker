@@ -203,11 +203,12 @@ if not st.session_state.user:
 # --- 7. SIDEBAR ---
 with st.sidebar:
     role = st.session_state.user.get('role', 'User').lower()
+    user_name = st.session_state.user.get('name', 'Faculty') # SAFE ACCESS
     
     st.markdown(f"""
     <div style='text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 10px; margin-bottom: 20px;'>
         <div style='font-size: 40px;'>👤</div>
-        <div style='font-weight: bold;'>{st.session_state.user.get('name')}</div>
+        <div style='font-weight: bold;'>{user_name}</div>
         <div style='color: #64748b; font-size: 12px; text-transform: uppercase;'>{role}</div>
     </div>
     """, unsafe_allow_html=True)
@@ -316,11 +317,9 @@ with t_inbox:
             
             if sel_cycle and db:
                 # 2. Fetch Data
-                # A. Get Expected Subjects from Schedule
                 sch_doc = db.collection("exam_schedule").document(sel_cycle).get()
                 expected_subjects = sch_doc.to_dict().get('subjects', [])
                 
-                # B. Get Actual Submissions from Exams Collection
                 # We filter exams that belong to this scheduleId
                 submitted_docs = list(db.collection("exams").where("exam_details.scheduleId", "==", sel_cycle).stream())
                 
@@ -332,7 +331,6 @@ with t_inbox:
                     data = d.to_dict()
                     code = data['exam_details'].get('courseCode')
                     status = data.get('status', 'NEW')
-                    # Prioritize higher status if duplicates exist
                     submitted_map[code] = status
 
                 # 4. Classify Subjects
@@ -345,7 +343,6 @@ with t_inbox:
                     dept = sub.get('Branch', 'Common')
                     
                     status = submitted_map.get(code, "PENDING")
-                    
                     item = {"Code": code, "Name": name, "Dept": dept, "Status": status}
                     
                     if status == "PENDING" or status == "NEW":
@@ -368,7 +365,7 @@ with t_inbox:
                 c_pen, c_comp = st.columns(2)
                 
                 with c_pen:
-                    st.error(f"❌ Pending / Not Submitted ({len(pending_list)})")
+                    st.error(f"❌ Pending ({len(pending_list)})")
                     if pending_list:
                         df_p = pd.DataFrame(pending_list)
                         st.dataframe(df_p[['Code', 'Name', 'Dept']], hide_index=True, use_container_width=True)
@@ -376,9 +373,8 @@ with t_inbox:
                         st.success("All subjects submitted!")
 
                 with c_comp:
-                    st.success(f"✅ Submitted / In Progress ({len(completed_list)})")
+                    st.success(f"✅ Submitted ({len(completed_list)})")
                     if completed_list:
-                        # Add color coding for status
                         df_c = pd.DataFrame(completed_list)
                         st.dataframe(df_c, hide_index=True, use_container_width=True)
                     else:
@@ -397,7 +393,7 @@ with t_inbox:
             with col_fil1:
                 filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
         
-        if 'inbox_cache' not in st.session_state or st.session_state.inbox_cache == []:
+        if st.button("🔄 Refresh Inbox") or 'inbox_cache' not in st.session_state:
             docs = []
             if db:
                 ref = db.collection("exams")
@@ -445,6 +441,28 @@ with t_inbox:
                             st.session_state.current_doc_status = status
                             st.success("Loaded!")
                             st.rerun()
+
+# === TAB 2: EDITOR (UNRESTRICTED) ===
+with t_edit:
+    # --- RESET BUTTON ---
+    col_rst, col_fill = st.columns([1, 4])
+    if col_rst.button("🆕 New Exam / Reset"):
+        st.session_state.current_doc_id = None
+        st.session_state.current_doc_status = "NEW"
+        st.session_state.exam_details = init_exam_data()
+        st.session_state.sections = [{'id': 1, 'isNote': False, 'questions': [{'id': 101, 'qNo': '1.a', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}]}]
+        st.rerun()
+
+    read_only = False
+    if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
+        st.warning("🔒 View Only Mode (Exam Submitted)"); read_only = True
+
+    # ----------------------------------------------------
+    # SECTION A: HEADER & SETTINGS (Free Hand + Branching)
+    # ----------------------------------------------------
+    with st.expander("📝 Exam Header & Settings", expanded=True):
+        user_dept = st.session_state.user.get('department')
+        manual_entry = False
         
         # --- DROPDOWN LOGIC ---
         if not read_only and role in ['faculty', 'admin']:
@@ -453,8 +471,7 @@ with t_inbox:
             ignore_dates = c_tog2.checkbox("🗓️ Ignore Date Restrictions", value=True) 
             
             if not manual_entry:
-                # --- NEW BRANCHING SELECTOR FOR EDITOR ---
-                # Default to user's dept, but allow changing if Admin
+                # --- BRANCHING SELECTOR ---
                 dept_index = 0
                 if user_dept in DEPTS: dept_index = DEPTS.index(user_dept)
                 
@@ -474,9 +491,6 @@ with t_inbox:
                                 
                                 if (s_start <= today <= s_end) or ignore_dates:
                                     for s in c_data.get('subjects', []):
-                                        # Only add subjects if they match the selected branch
-                                        # (Assuming 'Branch' column exists in CSV, or vaguely matching logic)
-                                        # Fallback: We show all if Branch column is missing, otherwise filter
                                         s_branch = s.get('Branch', '').upper()
                                         if not s_branch or s_branch == sel_branch or s_branch in ["ALL", "COMMON"]:
                                             s['_cycle_id'] = c_data['cycle_id']
@@ -509,7 +523,7 @@ with t_inbox:
                             'courseCode': chosen.get('SubCode'),
                             'courseName': chosen.get('SubName'),
                             'examDate': chosen.get('ExamDate'),
-                            'department': sel_branch, # Set department based on selection
+                            'department': sel_branch,
                             'scheduleId': chosen.get('_cycle_id')
                         })
 
@@ -519,10 +533,7 @@ with t_inbox:
         
         c1, c2, c3, c4 = st.columns(4)
         st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear'), disabled=input_disabled)
-        
-        # Department is now auto-filled from the Branch Selector above, but editable
         st.session_state.exam_details['department'] = c2.text_input("Department", st.session_state.exam_details.get('department'), disabled=read_only)
-        
         st.session_state.exam_details['semester'] = c3.text_input("Semester", st.session_state.exam_details.get('semester'), disabled=input_disabled)
         st.session_state.exam_details['examType'] = c4.text_input("Exam Type", st.session_state.exam_details.get('examType'), disabled=input_disabled)
 
@@ -536,19 +547,19 @@ with t_inbox:
         st.session_state.exam_details['duration'] = c1.text_input("Duration", st.session_state.exam_details.get('duration'), disabled=read_only)
         st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only)
 
-        # --- SIGNATORIES ---
+        # --- SIGNATORIES (Safe Version) ---
         s1, s2, s3 = st.columns(3)
         def_prep = st.session_state.exam_details.get('preparedBy')
-        
-        # SAFETY FIX: use .get() to prevent crashing if 'name' is missing
-        if not def_prep and st.session_state.user:
-             def_prep = st.session_state.user.get('name', 'Faculty')
+        if not def_prep: 
+            def_prep = st.session_state.user.get('name', 'Faculty') # SAFE ACCESS
         
         st.session_state.exam_details['preparedBy'] = s1.text_input("Prepared By", value=def_prep, disabled=read_only)
         st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only)
         st.session_state.exam_details['approvedBy'] = s3.text_input("Approved By", value=st.session_state.exam_details.get('approvedBy', ''), disabled=read_only)
 
-    # --- QUESTIONS EDITOR ---
+    # ----------------------------------------------------
+    # SECTION B: QUESTIONS EDITOR
+    # ----------------------------------------------------
     st.markdown("#### Questions Editor")
     for i, section in enumerate(st.session_state.sections):
         with st.container():
@@ -582,7 +593,9 @@ with t_inbox:
         if b1.button("➕ New Question Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
         if b2.button("➕ Add Instruction"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
 
-    # --- ACTIONS ---
+    # ----------------------------------------------------
+    # SECTION C: ACTIONS (Save, Submit, Approve)
+    # ----------------------------------------------------
     st.markdown("### Actions")
     current_id = st.session_state.get('current_doc_id')
     
@@ -598,7 +611,7 @@ with t_inbox:
             elif db:
                 data = {
                     'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections,
-                    'status': 'DRAFT', 'author_id': st.session_state.user['id'], 'author_name': st.session_state.user['name'],
+                    'status': 'DRAFT', 'author_id': st.session_state.user['id'], 'author_name': st.session_state.user.get('name', 'Faculty'),
                     'created_at': str(datetime.datetime.now())
                 }
                 db.collection("exams").document(current_id).set(data)
@@ -615,10 +628,10 @@ with t_inbox:
     if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
         comm = st.text_area("Scrutiny Comments")
         if c1.button("Return for Revision") and db: db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
-        if c2.button("Approve & Forward", type="primary") and db: db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user['name']}); st.success("Approved"); st.rerun()
+        if c2.button("Approve & Forward", type="primary") and db: db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user.get('name', 'Scrutinizer')}); st.success("Approved"); st.rerun()
 
     if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
-        if c3.button("✅ Final Publish", type="primary") and db: db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user['name']}); st.success("Published!"); st.rerun()
+        if c3.button("✅ Final Publish", type="primary") and db: db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user.get('name', 'Approver')}); st.success("Published!"); st.rerun()
 
     with st.expander("👁️ Live Preview"):
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
