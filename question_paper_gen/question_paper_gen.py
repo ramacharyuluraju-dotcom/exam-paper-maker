@@ -6,7 +6,7 @@ import datetime
 import json
 import base64
 import pandas as pd
-import traceback
+import time
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -51,7 +51,6 @@ def init_firebase():
     if not firebase_admin._apps:
         try:
             if "firestore" in st.secrets:
-                # Force dictionary conversion
                 key_dict = dict(st.secrets["firestore"])
                 cred = credentials.Certificate(key_dict)
                 firebase_admin.initialize_app(cred)
@@ -219,28 +218,33 @@ with st.sidebar:
     if role == 'admin':
         st.header("⚙️ Admin")
         
-        # --- FIX 1: AUTO-LOAD SCHEDULES (No Button) ---
+        # --- VIEW SCHEDULES ---
         with st.expander("📋 Active Schedules", expanded=True):
             if db:
                 try:
+                    # Stream all schedules
                     sch_ref = db.collection("exam_schedule").stream()
                     schedules_found = False
+                    
                     for s in sch_ref:
                         schedules_found = True
                         sd = s.to_dict()
                         st.markdown(f"**{sd.get('cycle_id')}**")
                         st.caption(f"{sd.get('submission_start')} ➔ {sd.get('submission_end')}")
                         st.text(f"Subjects: {len(sd.get('subjects', []))}")
+                        
+                        # DELETE BUTTON
                         if st.button("🗑️", key=f"del_{s.id}"):
                             db.collection("exam_schedule").document(s.id).delete()
                             st.rerun()
                         st.divider()
+                        
                     if not schedules_found:
-                        st.caption("No active cycles.")
+                        st.caption("No active cycles found.")
                 except Exception as e:
                     st.error(f"DB Error: {e}")
 
-        # --- FIX 2: ROBUST UPLOAD ---
+        # --- UPLOAD SCHEDULES (FIXED PERSISTENCE) ---
         with st.expander("📅 Upload New Schedule"):
             st.info("Upload Time Table CSV.")
             
@@ -258,37 +262,39 @@ with st.sidebar:
                     elif not cy_id or not up_csv: st.error("Fill all fields")
                     else:
                         try:
-                            # 1. Read
+                            # 1. READ CSV
                             df = pd.read_csv(up_csv)
-                            df.columns = df.columns.str.strip()
                             
-                            # 2. Sanitize using JSON (Crucial Fix)
-                            # This removes numpy types that crash Firestore
-                            clean_json_str = df.to_json(orient='records', date_format='iso')
-                            clean_subjects = json.loads(clean_json_str)
+                            # 2. NUCLEAR OPTION: FORCE STRINGS & CLEAN HEADERS
+                            # Remove special chars from headers that Firestore hates
+                            df.columns = df.columns.str.strip().str.replace(r'[./]', '_', regex=True)
                             
-                            # 3. Create Doc
+                            # Force every single cell to be a string to prevent type errors
+                            df = df.astype(str)
+                            
+                            # Convert to list of dicts
+                            subjects_data = df.to_dict(orient='records')
+                            
+                            # 3. PREPARE DATA
                             doc_data = {
                                 'cycle_id': cy_id,
                                 'submission_start': str(d_start),
                                 'submission_end': str(d_end),
-                                'subjects': clean_subjects,
+                                'subjects': subjects_data,
                                 'created_at': str(datetime.datetime.now())
                             }
                             
-                            # 4. Upload
+                            # 4. UPLOAD
                             doc_ref = db.collection("exam_schedule").document(cy_id)
                             doc_ref.set(doc_data)
                             
-                            # 5. Immediate Verify
-                            v_doc = doc_ref.get()
-                            if v_doc.exists:
-                                st.success(f"✅ Verified! Loaded {len(clean_subjects)} subjects.")
-                            else:
-                                st.error("❌ Save failed silently.")
+                            # 5. INSTANT REFRESH
+                            st.success(f"✅ Success! Uploaded {len(subjects_data)} subjects. Refreshing...")
+                            time.sleep(1) # Give user 1s to see the success message
+                            st.rerun() # Force reload to show data in list above
                                 
                         except Exception as e:
-                            st.error(f"Error: {e}")
+                            st.error(f"❌ Error: {e}")
 
         with st.expander("Add User"):
             with st.form("new_u"):
