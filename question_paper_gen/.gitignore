@@ -1,0 +1,26 @@
+# --- Python Basics ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.manifest
+.env
+.venv
+env/
+venv/
+ENV/
+
+# --- Streamlit Secrets (CRITICAL) ---
+.streamlit/secrets.toml
+
+# --- Firebase Keys (If you downloaded JSON files) ---
+*.json
+!backup.json
+!firebase-key.json  # Only exclude if this is NOT your real secret key
+
+# --- OS Generated Files ---
+.DS_Store
+Thumbs.db
+
+# --- Editor Configs ---
+.vscode/
+.idea/
