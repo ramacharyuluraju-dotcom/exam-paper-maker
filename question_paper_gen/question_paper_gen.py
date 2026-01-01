@@ -649,38 +649,89 @@ with t_lib:
         if not docs:
             st.info("📭 No approved question papers found yet.")
         else:
-            # Sort by latest created (optional, depends on your data structure)
-            # docs.sort(key=lambda x: x.to_dict().get('created_at', ''), reverse=True)
-
             for doc in docs:
                 d = doc.to_dict()
                 det = d.get('exam_details', {})
                 sec_data = d.get('sections', [])
                 
-                # Create a clear label for the card
+                # Label for the UI Card
                 label = f"✅ {det.get('courseCode')} : {det.get('courseName')} ({det.get('examType')})"
                 
                 with st.expander(label):
-                    # --- 1. PREPARE CSV DATA ---
-                    # We flatten the structure: Sections -> Questions -> Rows
+                    # --- 1. PREPARE CSV DATA (With Headers) ---
                     data_rows = []
+                    
+                    # We repeat header info in every row for easier database merging
+                    header_info = {
+                        "Academic Year": det.get('acadYear', ''),
+                        "Semester": det.get('semester', ''),
+                        "Department": det.get('department', ''),
+                        "Exam Type": det.get('examType', ''),
+                        "Course Code": det.get('courseCode', ''),
+                        "Course Name": det.get('courseName', ''),
+                        "Exam Date": det.get('examDate', '')
+                    }
+
                     for sec in sec_data:
-                        if not sec.get('isNote'): # Skip "Instruction" blocks, keep only Questions
+                        if not sec.get('isNote'): # Skip Instructions
                             for q in sec['questions']:
-                                data_rows.append({
+                                # Merge Header Info + Question Info
+                                row = header_info.copy()
+                                row.update({
                                     "Q.No": q.get('qNo'),
-                                    "Question": q.get('text'),
-                                    "Marks": q.get('marks'),
+                                    "Question Text": q.get('text'),
+                                    "Max Marks": q.get('marks'),
                                     "CO": q.get('co'),
-                                    "Level": q.get('level')
+                                    "Bloom Level": q.get('level')
                                 })
+                                data_rows.append(row)
                     
                     if data_rows:
                         df_csv = pd.DataFrame(data_rows)
+                        # Reorder columns to make it logical
+                        cols = ["Academic Year", "Semester", "Exam Type", "Course Code", "Course Name", "Q.No", "Max Marks", "CO", "Bloom Level", "Question Text"]
+                        # Filter to ensure only existing columns are selected (avoids errors if keys missing)
+                        cols = [c for c in cols if c in df_csv.columns]
+                        df_csv = df_csv[cols]
+                        
                         csv_string = df_csv.to_csv(index=False).encode('utf-8')
                     else:
                         df_csv = pd.DataFrame()
                         csv_string = b""
+
+                    # --- 2. PREPARE HTML PDF DATA ---
+                    html_content = generate_html(det, sec_data)
+                    b64 = base64.b64encode(html_content.encode()).decode()
+
+                    # --- 3. DISPLAY BUTTONS ---
+                    c_btn1, c_btn2 = st.columns([1, 1])
+                    
+                    with c_btn1:
+                        # HTML Button (Visual)
+                        href = f'''
+                        <a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}_QP.html" style="text-decoration:none;">
+                            <div style="text-align:center; background-color:#f8fafc; border:1px solid #cbd5e1; color:#334155; padding:10px; border-radius:8px; cursor:pointer; font-weight:600;">
+                                📄 Download Exam Paper (PDF View)
+                            </div>
+                        </a>
+                        '''
+                        st.markdown(href, unsafe_allow_html=True)
+                    
+                    with c_btn2:
+                        # CSV Button (Data)
+                        st.download_button(
+                            label="📊 Download CSV (For Result Analysis)",
+                            data=csv_string,
+                            file_name=f"{det.get('courseCode')}_Master_Data.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+
+                    # --- 4. PREVIEW ---
+                    st.markdown("---")
+                    st.caption(f"**Data Preview:**")
+                    if not df_csv.empty:
+                        st.dataframe(df_csv, hide_index=True, use_container_width=True)
 
                     # --- 2. PREPARE HTML PDF DATA ---
                     html_content = generate_html(det, sec_data)
