@@ -68,7 +68,7 @@ def init_firebase():
 
 firebase_ready = init_firebase()
 
-# --- 3. SECURITY HELPER FUNCTIONS ---
+# --- 3. HELPER FUNCTIONS (Security + HTML) ---
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
@@ -87,9 +87,11 @@ def login_user(username, password):
     except Exception: pass
     return None
 
-# --- 4. HTML GENERATOR (PDF View) ---
 def generate_html(details, sections):
     header_title = f"{details.get('examType', 'Exam')} - {details.get('semester', '')} Semester"
+    # Append Set Type to header if available
+    if details.get('setType'): header_title += f" ({details.get('setType')})"
+    
     usn_boxes = "".join(['<div class="box"></div>' for _ in range(10)])
     rows = ""
     for sec in sections:
@@ -172,7 +174,8 @@ def init_exam_data():
         'accreditation': 'NAAC A+ | NBA Accredited', 'department': '',
         'acadYear': '2024-2025', 'semester': '', 'examType': '', 'examDate': '',
         'courseName': '', 'courseCode': '', 'maxMarks': 50, 'duration': '90 Mins',
-        'preparedBy': '', 'scrutinizedBy': '', 'approvedBy': '', 'scheduleId': ''
+        'preparedBy': '', 'scrutinizedBy': '', 'approvedBy': '', 'scheduleId': '',
+        'setType': 'Set A' 
     }
 
 if 'exam_details' not in st.session_state:
@@ -203,7 +206,7 @@ if not st.session_state.user:
 # --- 7. SIDEBAR ---
 with st.sidebar:
     role = st.session_state.user.get('role', 'User').lower()
-    user_name = st.session_state.user.get('name', 'Faculty') # SAFE ACCESS
+    user_name = st.session_state.user.get('name', 'Faculty')
     
     st.markdown(f"""
     <div style='text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 10px; margin-bottom: 20px;'>
@@ -295,7 +298,7 @@ with t_inbox:
     if role == 'admin':
         c_mode, c_refresh = st.columns([6, 1])
         with c_mode:
-            view_mode = st.radio("View Mode", ["📂 Inbox (Tasks)", "📊 Status Dashboard"], horizontal=True, label_visibility="collapsed")
+            view_mode = st.radio("View Mode", ["📂 Inbox (Tasks)", "📊 Status Dashboard", "🔐 QP Selection (COE)"], horizontal=True, label_visibility="collapsed")
         with c_refresh:
             if st.button("🔄"): st.session_state.inbox_cache = []
 
@@ -304,122 +307,124 @@ with t_inbox:
     # ----------------------------------
     if role == 'admin' and view_mode == "📊 Status Dashboard":
         st.markdown("### 📊 Exam Cycle Compliance")
-        
-        # 1. Select Cycle
         cycles = []
-        if db:
-            cycles = [d.id for d in db.collection("exam_schedule").stream()]
+        if db: cycles = [d.id for d in db.collection("exam_schedule").stream()]
         
         if not cycles:
             st.warning("No exam schedules found. Upload a schedule in the Sidebar first.")
         else:
             sel_cycle = st.selectbox("Select Exam Cycle", cycles)
-            
             if sel_cycle and db:
-                # 2. Fetch Data
                 sch_doc = db.collection("exam_schedule").document(sel_cycle).get()
                 expected_subjects = sch_doc.to_dict().get('subjects', [])
-                
-                # We filter exams that belong to this scheduleId
                 submitted_docs = list(db.collection("exams").where("exam_details.scheduleId", "==", sel_cycle).stream())
                 
-                # 3. Process Data
                 total_count = len(expected_subjects)
-                submitted_map = {} # Map Code -> Status
-                
+                submitted_map = {} 
                 for d in submitted_docs:
                     data = d.to_dict()
                     code = data['exam_details'].get('courseCode')
                     status = data.get('status', 'NEW')
                     submitted_map[code] = status
 
-                # 4. Classify Subjects
                 pending_list = []
                 completed_list = []
-                
                 for sub in expected_subjects:
-                    code = sub.get('SubCode')
-                    name = sub.get('SubName')
-                    dept = sub.get('Branch', 'Common')
-                    
+                    code = sub.get('SubCode'); name = sub.get('SubName'); dept = sub.get('Branch', 'Common')
                     status = submitted_map.get(code, "PENDING")
                     item = {"Code": code, "Name": name, "Dept": dept, "Status": status}
-                    
-                    if status == "PENDING" or status == "NEW":
-                        pending_list.append(item)
-                    else:
-                        completed_list.append(item)
+                    if status == "PENDING" or status == "NEW": pending_list.append(item)
+                    else: completed_list.append(item)
 
-                # 5. Display Metrics
                 sub_count = len(completed_list)
                 progress = sub_count / total_count if total_count > 0 else 0
                 
                 m1, m2, m3 = st.columns(3)
-                m1.metric("Total Subjects", total_count)
-                m2.metric("Received", sub_count)
-                m3.metric("Pending", len(pending_list), delta_color="inverse")
-                
+                m1.metric("Total Subjects", total_count); m2.metric("Received", sub_count); m3.metric("Pending", len(pending_list), delta_color="inverse")
                 st.progress(progress)
-
-                # 6. Display Lists
-                c_pen, c_comp = st.columns(2)
                 
+                c_pen, c_comp = st.columns(2)
                 with c_pen:
                     st.error(f"❌ Pending ({len(pending_list)})")
-                    if pending_list:
-                        df_p = pd.DataFrame(pending_list)
-                        st.dataframe(df_p[['Code', 'Name', 'Dept']], hide_index=True, use_container_width=True)
-                    else:
-                        st.success("All subjects submitted!")
-
+                    if pending_list: st.dataframe(pd.DataFrame(pending_list)[['Code', 'Name', 'Dept']], hide_index=True, use_container_width=True)
                 with c_comp:
                     st.success(f"✅ Submitted ({len(completed_list)})")
-                    if completed_list:
-                        df_c = pd.DataFrame(completed_list)
-                        st.dataframe(df_c, hide_index=True, use_container_width=True)
-                    else:
-                        st.info("No submissions yet.")
+                    if completed_list: st.dataframe(pd.DataFrame(completed_list), hide_index=True, use_container_width=True)
 
     # ----------------------------------
-    # VIEW 2: STANDARD INBOX (TASK LIST)
+    # VIEW 3: QP SELECTION (COE ONLY)
+    # ----------------------------------
+    elif role == 'admin' and view_mode == "🔐 QP Selection (COE)":
+        st.markdown("### 🔐 Final Exam Selection (Lottery)")
+        st.info("Select the final paper to be printed. This determines the columns for the IA Marks Entry CSV.")
+        
+        if db:
+            docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
+            grouped = {}
+            for d in docs:
+                data = d.to_dict()
+                code = data['exam_details'].get('courseCode', 'Unknown')
+                if code not in grouped: grouped[code] = []
+                grouped[code].append(d)
+            
+            if not grouped: st.warning("No approved papers ready for selection.")
+            
+            for code, papers in grouped.items():
+                sub_name = papers[0].to_dict()['exam_details'].get('courseName', '')
+                with st.expander(f"📦 {code} - {sub_name} ({len(papers)} Sets)"):
+                    cols = st.columns(len(papers))
+                    for i, doc in enumerate(papers):
+                        d = doc.to_dict()
+                        det = d['exam_details']
+                        is_final = d.get('is_final_exam', False)
+                        
+                        border = "2px solid #22c55e" if is_final else "1px solid #e2e8f0"
+                        bg = "#f0fdf4" if is_final else "#ffffff"
+                        
+                        with cols[i]:
+                            st.markdown(f"""
+                            <div style="border:{border}; background:{bg}; padding:10px; border-radius:8px; text-align:center;">
+                                <h4>{det.get('setType', 'Set ?')}</h4>
+                                <div style="font-size:12px;">Prepared By: {det.get('preparedBy')}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            if is_final: st.success("✅ SELECTED")
+                            else:
+                                if st.button(f"🔒 Select {det.get('setType')}", key=f"sel_{doc.id}"):
+                                    for other_doc in papers: db.collection("exams").document(other_doc.id).update({'is_final_exam': False})
+                                    db.collection("exams").document(doc.id).update({'is_final_exam': True})
+                                    st.rerun()
+
+    # ----------------------------------
+    # VIEW 2: STANDARD INBOX
     # ----------------------------------
     else:
         st.markdown(f"### 📥 {role.capitalize()} Inbox")
-        
-        # --- BRANCHING FILTER FOR ADMINS/APPROVERS ---
         filter_dept = "All"
         if role in ['admin', 'approver', 'scrutinizer']:
             col_fil1, col_fil2 = st.columns([1, 4])
-            with col_fil1:
-                filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
+            with col_fil1: filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
         
         if st.button("🔄 Refresh Inbox") or 'inbox_cache' not in st.session_state:
             docs = []
             if db:
                 ref = db.collection("exams")
-                # --- APPLYING BASIC ROLE FILTERS ---
-                if role == 'faculty': 
-                    docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
-                elif role == 'scrutinizer': 
-                    docs = list(ref.where("status", "==", "SUBMITTED").stream())
-                elif role == 'approver': 
-                    docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
-                elif role == 'admin': 
-                    docs = list(ref.stream())
+                if role == 'faculty': docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
+                elif role == 'scrutinizer': docs = list(ref.where("status", "==", "SUBMITTED").stream())
+                elif role == 'approver': docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
+                elif role == 'admin': docs = list(ref.stream())
             st.session_state.inbox_cache = docs
 
-        # --- RENDER INBOX WITH DEPT BRANCHING ---
         if 'inbox_cache' in st.session_state:
             filtered_docs = []
             for doc in st.session_state.inbox_cache:
                 d = doc.to_dict()
                 det = d.get('exam_details', {})
-                if filter_dept != "All" and det.get('department') != filter_dept:
-                    continue
+                if filter_dept != "All" and det.get('department') != filter_dept: continue
                 filtered_docs.append(doc)
 
-            if not filtered_docs: 
-                st.info(f"📭 No pending items for {filter_dept}.")
+            if not filtered_docs: st.info(f"📭 No pending items for {filter_dept}.")
             else:
                 for doc in filtered_docs:
                     d = doc.to_dict()
@@ -431,7 +436,7 @@ with t_inbox:
                     elif status == "APPROVED": badge = "badge-approved"
                     elif status == "REVISION": badge = "badge-revision"
 
-                    with st.expander(f"{det.get('courseCode')} - {det.get('courseName')}"):
+                    with st.expander(f"{det.get('courseCode')} - {det.get('courseName')} ({det.get('setType')})"):
                         st.markdown(f"<span class='badge {badge}'>{status}</span> | 🏢 <b>{det.get('department')}</b> | {det.get('examType')}", unsafe_allow_html=True)
                         if d.get('scrutiny_comments'): st.error(f"Feedback: {d.get('scrutiny_comments')}")
                         if st.button("📂 Open Editor", key=f"ld_{doc.id}"):
@@ -444,7 +449,6 @@ with t_inbox:
 
 # === TAB 2: EDITOR (UNRESTRICTED) ===
 with t_edit:
-    # --- RESET BUTTON ---
     col_rst, col_fill = st.columns([1, 4])
     if col_rst.button("🆕 New Exam / Reset"):
         st.session_state.current_doc_id = None
@@ -457,24 +461,19 @@ with t_edit:
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
         st.warning("🔒 View Only Mode (Exam Submitted)"); read_only = True
 
-    # ----------------------------------------------------
-    # SECTION A: HEADER & SETTINGS (Free Hand + Branching)
-    # ----------------------------------------------------
+    # SECTION A: HEADER & SETTINGS
     with st.expander("📝 Exam Header & Settings", expanded=True):
         user_dept = st.session_state.user.get('department')
         manual_entry = False
         
-        # --- DROPDOWN LOGIC ---
         if not read_only and role in ['faculty', 'admin']:
             c_tog1, c_tog2 = st.columns(2)
             manual_entry = c_tog1.toggle("✍️ Manual Entry (No Schedule)", value=False)
             ignore_dates = c_tog2.checkbox("🗓️ Ignore Date Restrictions", value=True) 
             
             if not manual_entry:
-                # --- BRANCHING SELECTOR ---
                 dept_index = 0
                 if user_dept in DEPTS: dept_index = DEPTS.index(user_dept)
-                
                 sel_branch = st.selectbox("📂 Select Branch/Dept to View Subjects", DEPTS, index=dept_index)
                 
                 active_subjects = []
@@ -482,52 +481,39 @@ with t_edit:
                     try:
                         all_cycles = db.collection("exam_schedule").stream()
                         today = datetime.date.today()
-                        
                         for cy in all_cycles:
                             c_data = cy.to_dict()
                             try:
                                 s_start = datetime.datetime.strptime(c_data['submission_start'].split(' ')[0], "%Y-%m-%d").date()
                                 s_end = datetime.datetime.strptime(c_data['submission_end'].split(' ')[0], "%Y-%m-%d").date()
-                                
                                 if (s_start <= today <= s_end) or ignore_dates:
                                     for s in c_data.get('subjects', []):
                                         s_branch = s.get('Branch', '').upper()
                                         if not s_branch or s_branch == sel_branch or s_branch in ["ALL", "COMMON"]:
                                             s['_cycle_id'] = c_data['cycle_id']
                                             active_subjects.append(s)
-                            except Exception: continue
-                    except Exception: pass
+                            except: continue
+                    except: pass
 
-                if not active_subjects:
-                    st.warning(f"⚠️ No active exams found for {sel_branch}.")
+                if not active_subjects: st.warning(f"⚠️ No active exams found for {sel_branch}.")
                 else:
                     active_subjects = sorted(active_subjects, key=lambda x: x.get('SubName', ''))
-                    
                     opts = ["-- Select --"] + [f"{s.get('SubCode','?')} : {s.get('SubName','Unknown')}" for s in active_subjects]
                     curr_code = st.session_state.exam_details.get('courseCode')
                     curr_idx = 0
                     if curr_code:
                         for idx, s in enumerate(active_subjects):
-                            if s.get('SubCode') == curr_code: 
-                                curr_idx = idx + 1
-                                break
-                    
+                            if s.get('SubCode') == curr_code: curr_idx = idx + 1; break
                     sel = st.selectbox("📌 Select Subject", opts, index=curr_idx)
 
                     if sel and sel != "-- Select --":
                         chosen = active_subjects[opts.index(sel) - 1]
                         st.session_state.exam_details.update({
-                            'acadYear': chosen.get('AY'),
-                            'semester': str(chosen.get('Sem')),
-                            'examType': chosen.get('Type'),
-                            'courseCode': chosen.get('SubCode'),
-                            'courseName': chosen.get('SubName'),
-                            'examDate': chosen.get('ExamDate'),
-                            'department': sel_branch,
-                            'scheduleId': chosen.get('_cycle_id')
+                            'acadYear': chosen.get('AY'), 'semester': str(chosen.get('Sem')), 'examType': chosen.get('Type'),
+                            'courseCode': chosen.get('SubCode'), 'courseName': chosen.get('SubName'), 'examDate': chosen.get('ExamDate'),
+                            'department': sel_branch, 'scheduleId': chosen.get('_cycle_id')
                         })
 
-        # --- INPUT FIELDS ---
         input_disabled = True
         if manual_entry and not read_only: input_disabled = False
         
@@ -537,29 +523,30 @@ with t_edit:
         st.session_state.exam_details['semester'] = c3.text_input("Semester", st.session_state.exam_details.get('semester'), disabled=input_disabled)
         st.session_state.exam_details['examType'] = c4.text_input("Exam Type", st.session_state.exam_details.get('examType'), disabled=input_disabled)
 
-        c1, c2, c3 = st.columns([1, 1, 2])
+        c1, c2, c3, c4 = st.columns(4) 
         st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", st.session_state.exam_details.get('examDate'), disabled=input_disabled)
         st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=input_disabled)
-        st.session_state.exam_details['courseName'] = c3.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=input_disabled)
+        
+        # --- QP SET SELECTOR ---
+        set_opts = ["Set A", "Set B", "Set C"]
+        curr_set = st.session_state.exam_details.get('setType', 'Set A')
+        st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set) if curr_set in set_opts else 0, disabled=read_only)
+        
+        st.session_state.exam_details['courseName'] = c4.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=input_disabled)
 
         st.markdown("**⚙️ Paper Settings & Signatories**")
         c1, c2 = st.columns(2)
         st.session_state.exam_details['duration'] = c1.text_input("Duration", st.session_state.exam_details.get('duration'), disabled=read_only)
         st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only)
 
-        # --- SIGNATORIES (Safe Version) ---
         s1, s2, s3 = st.columns(3)
         def_prep = st.session_state.exam_details.get('preparedBy')
-        if not def_prep: 
-            def_prep = st.session_state.user.get('name', 'Faculty') # SAFE ACCESS
-        
+        if not def_prep: def_prep = st.session_state.user.get('name', 'Faculty')
         st.session_state.exam_details['preparedBy'] = s1.text_input("Prepared By", value=def_prep, disabled=read_only)
         st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only)
         st.session_state.exam_details['approvedBy'] = s3.text_input("Approved By", value=st.session_state.exam_details.get('approvedBy', ''), disabled=read_only)
 
-    # ----------------------------------------------------
     # SECTION B: QUESTIONS EDITOR
-    # ----------------------------------------------------
     st.markdown("#### Questions Editor")
     for i, section in enumerate(st.session_state.sections):
         with st.container():
@@ -593,16 +580,14 @@ with t_edit:
         if b1.button("➕ New Question Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
         if b2.button("➕ Add Instruction"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
 
-    # ----------------------------------------------------
-    # SECTION C: ACTIONS (Save, Submit, Approve)
-    # ----------------------------------------------------
+    # SECTION C: ACTIONS
     st.markdown("### Actions")
     current_id = st.session_state.get('current_doc_id')
-    
     d = st.session_state.exam_details
     if not current_id and d['courseCode']:
         safe_ay = str(d['acadYear']).replace(" ", "")
-        current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}"
+        safe_set = str(d.get('setType', 'Set A')).replace(" ", "")
+        current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}_{safe_set}"
 
     c1, c2, c3 = st.columns(3)
     if role in ['faculty', 'admin']:
@@ -637,110 +622,91 @@ with t_edit:
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html, height=800, scrolling=True)
 
-# === TAB 3: LIBRARY ===
+# === TAB 3: LIBRARY (SECURE) ===
 with t_lib:
     st.header("📚 Exam Archive")
-    st.caption("Download approved papers for printing or result analysis.")
-    
+    st.caption("Access approved papers and result templates.")
+
     if db:
-        # Fetch only APPROVED exams
+        # 1. DATE SECURITY CHECK
+        schedule_end_dates = {}
+        try:
+            sch_ref = db.collection("exam_schedule").stream()
+            for s in sch_ref:
+                sd = s.to_dict()
+                end_str = sd.get('submission_end', '').split(' ')[0]
+                schedule_end_dates[s.id] = datetime.datetime.strptime(end_str, "%Y-%m-%d").date()
+        except: pass
+
         docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
-        
-        if not docs:
-            st.info("📭 No approved question papers found yet.")
+        if not docs: st.info("📭 No approved question papers found yet.")
         else:
+            docs.sort(key=lambda x: x.to_dict().get('exam_details', {}).get('courseCode', ''))
             for doc in docs:
                 d = doc.to_dict()
                 det = d.get('exam_details', {})
                 sec_data = d.get('sections', [])
                 
-                # Label for the UI Card
-                label = f"✅ {det.get('courseCode')} : {det.get('courseName')} ({det.get('examType')})"
+                # Check Visibility Rules
+                cycle_id = det.get('scheduleId')
+                cycle_end = schedule_end_dates.get(cycle_id)
+                today = datetime.date.today()
+                
+                is_admin = (st.session_state.user['role'] == 'admin')
+                is_cycle_over = (cycle_end and today > cycle_end)
+                show_sensitive_info = is_admin or is_cycle_over
+
+                label = f"{det.get('courseCode')} : {det.get('courseName')} ({det.get('examType')}) - {det.get('setType', 'Set ?')}"
                 
                 with st.expander(label):
-                    # --- 1. PREPARE CSV DATA (With Headers & Filtering) ---
+                    is_final = d.get('is_final_exam', False)
+                    if is_final:
+                        if show_sensitive_info: st.success("✅ **SELECTED FINAL EXAM** (Ready for Results)")
+                        else: st.info("🔒 Status: Approved (Selection Hidden until Exam Cycle Ends)")
+                    else: st.write(f"Status: Approved Backup ({det.get('setType')})")
+
+                    # CSV Generation
                     data_rows = []
-                    
-                    # Header info repeated for every row
                     header_info = {
-                        "Exam Cycle": det.get('scheduleId', ''), # Added Exam Cycle
-                        "Academic Year": det.get('acadYear', ''),
-                        "Semester": det.get('semester', ''),
-                        "Department": det.get('department', ''),
-                        "Exam Type": det.get('examType', ''),
-                        "Course Code": det.get('courseCode', ''),
-                        "Course Name": det.get('courseName', ''),
-                        "Exam Date": det.get('examDate', '')
+                        "Exam Cycle": det.get('scheduleId', ''), "Academic Year": det.get('acadYear', ''),
+                        "Semester": det.get('semester', ''), "Department": det.get('department', ''),
+                        "Exam Type": det.get('examType', ''), "Course Code": det.get('courseCode', ''),
+                        "Course Name": det.get('courseName', ''), "Exam Date": det.get('examDate', '')
                     }
-
                     for sec in sec_data:
-                        if not sec.get('isNote'): # Skip Note Blocks
+                        if not sec.get('isNote'):
                             for q in sec['questions']:
-                                # FIX: Convert marks to float and check if > 0
-                                # This removes 'OR', instructions, and zero-mark headers
-                                try:
-                                    marks_val = float(q.get('marks', 0))
-                                except:
-                                    marks_val = 0
-
-                                if marks_val > 0:
-                                    # Merge Header Info + Question Info
+                                try: m_val = float(q.get('marks', 0))
+                                except: m_val = 0
+                                if m_val > 0:
                                     row = header_info.copy()
-                                    row.update({
-                                        "Q.No": q.get('qNo'),
-                                        "Question Text": q.get('text'),
-                                        "Max Marks": marks_val,
-                                        "CO": q.get('co'),
-                                        "Bloom Level": q.get('level')
-                                    })
+                                    row.update({"Q.No": q.get('qNo'), "Question": q.get('text'), "Marks": m_val, "CO": q.get('co'), "Level": q.get('level')})
                                     data_rows.append(row)
                     
-                    if data_rows:
-                        df_csv = pd.DataFrame(data_rows)
-                        # Reorder columns for logical flow
-                        cols = ["Exam Cycle", "Academic Year", "Semester", "Exam Type", "Course Code", "Course Name", "Q.No", "Max Marks", "CO", "Bloom Level", "Question Text"]
-                        # Filter to ensure only existing columns are selected
-                        cols = [c for c in cols if c in df_csv.columns]
-                        df_csv = df_csv[cols]
-                        
-                        csv_string = df_csv.to_csv(index=False).encode('utf-8')
-                    else:
-                        df_csv = pd.DataFrame()
-                        csv_string = b""
-
-                    # --- 2. PREPARE HTML PDF DATA ---
+                    csv_analysis = pd.DataFrame(data_rows).to_csv(index=False).encode('utf-8') if data_rows else b""
                     html_content = generate_html(det, sec_data)
                     b64 = base64.b64encode(html_content.encode()).decode()
 
-                    # --- 3. DISPLAY BUTTONS ---
-                    c_btn1, c_btn2 = st.columns([1, 1])
-                    
-                    with c_btn1:
-                        # HTML Button (Visual)
-                        href = f'''
-                        <a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}_QP.html" style="text-decoration:none;">
-                            <div style="text-align:center; background-color:#f8fafc; border:1px solid #cbd5e1; color:#334155; padding:10px; border-radius:8px; cursor:pointer; font-weight:600;">
-                                📄 Download Exam Paper (PDF View)
-                            </div>
-                        </a>
-                        '''
+                    c1, c2, c3 = st.columns([1, 1, 1])
+                    with c1:
+                        href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}_{det.get("setType")}.html" style="text-decoration:none;"><button style="width:100%; padding:8px; border-radius:5px; border:1px solid #ccc;">📄 View Paper</button></a>'
                         st.markdown(href, unsafe_allow_html=True)
-                    
-                    with c_btn2:
-                        # CSV Button (Data)
-                        st.download_button(
-                            label="📊 Download CSV (Result Analysis)",
-                            data=csv_string,
-                            file_name=f"{det.get('courseCode')}_Analysis_Data.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
+                    with c2:
+                        st.download_button("📊 Analysis CSV", csv_analysis, f"{det.get('courseCode')}_Data.csv", "text/csv", use_container_width=True)
+                    with c3:
+                        if is_final and show_sensitive_info:
+                            mark_cols = ['USN', 'Student Name']
+                            for sec in sec_data:
+                                if not sec.get('isNote'):
+                                    for q in sec['questions']:
+                                        try: m = int(q.get('marks',0))
+                                        except: m=0
+                                        if m > 0: mark_cols.append(f"Q{q.get('qNo')} ({m})")
+                            df_temp = pd.DataFrame(columns=mark_cols)
+                            csv_temp = df_temp.to_csv(index=False).encode('utf-8')
+                            st.download_button("📝 Marks Entry Template", csv_temp, f"{det.get('courseCode')}_MarksEntry.csv", "text/csv", use_container_width=True, type="primary")
+                        elif is_final and not show_sensitive_info: st.caption("🔒 Template unlocks after exam cycle.")
 
-                    # --- 4. PREVIEW ---
-                    st.markdown("---")
-                    st.caption(f"**Data Preview (Cleaned):**")
-                    if not df_csv.empty:
-                        st.dataframe(df_csv, hide_index=True, use_container_width=True)
 # === TAB 4: CALENDAR ===
 with t_cal:
     st.header("📅 Academic Schedule")
