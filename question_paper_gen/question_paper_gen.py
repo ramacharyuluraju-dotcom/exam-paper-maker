@@ -68,7 +68,7 @@ def init_firebase():
 
 firebase_ready = init_firebase()
 
-# --- 3. HELPER FUNCTIONS (Security + HTML) ---
+# --- 3. HELPER FUNCTIONS ---
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
@@ -175,7 +175,7 @@ def init_exam_data():
         'acadYear': '2024-2025', 'semester': '', 'examType': '', 'examDate': '',
         'courseName': '', 'courseCode': '', 'maxMarks': 50, 'duration': '90 Mins',
         'preparedBy': '', 'scrutinizedBy': '', 'approvedBy': '', 'scheduleId': '',
-        'setType': 'Set A' 
+        'setType': 'Set A' # REQUIRED: Support for Set A/B
     }
 
 if 'exam_details' not in st.session_state:
@@ -298,6 +298,7 @@ with t_inbox:
     if role == 'admin':
         c_mode, c_refresh = st.columns([6, 1])
         with c_mode:
+            # REQUIRED: Added "QP Selection" to the options
             view_mode = st.radio("View Mode", ["📂 Inbox (Tasks)", "📊 Status Dashboard", "🔐 QP Selection (COE)"], horizontal=True, label_visibility="collapsed")
         with c_refresh:
             if st.button("🔄"): st.session_state.inbox_cache = []
@@ -352,7 +353,7 @@ with t_inbox:
                     if completed_list: st.dataframe(pd.DataFrame(completed_list), hide_index=True, use_container_width=True)
 
     # ----------------------------------
-    # VIEW 3: QP SELECTION (COE ONLY)
+    # VIEW 3: QP SELECTION (COE ONLY) - REQUIRED
     # ----------------------------------
     elif role == 'admin' and view_mode == "🔐 QP Selection (COE)":
         st.markdown("### 🔐 Final Exam Selection (Lottery)")
@@ -527,7 +528,7 @@ with t_edit:
         st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", st.session_state.exam_details.get('examDate'), disabled=input_disabled)
         st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=input_disabled)
         
-        # --- QP SET SELECTOR ---
+        # --- REQUIRED: QP SET SELECTOR ---
         set_opts = ["Set A", "Set B", "Set C"]
         curr_set = st.session_state.exam_details.get('setType', 'Set A')
         st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set) if curr_set in set_opts else 0, disabled=read_only)
@@ -587,6 +588,7 @@ with t_edit:
     if not current_id and d['courseCode']:
         safe_ay = str(d['acadYear']).replace(" ", "")
         safe_set = str(d.get('setType', 'Set A')).replace(" ", "")
+        # REQUIRED: Set ID Generation
         current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}_{safe_set}"
 
     c1, c2, c3 = st.columns(3)
@@ -628,7 +630,7 @@ with t_lib:
     st.caption("Access approved papers and result templates.")
 
     if db:
-        # 1. DATE SECURITY CHECK
+        # 1. DATE SECURITY CHECK - REQUIRED
         schedule_end_dates = {}
         try:
             sch_ref = db.collection("exam_schedule").stream()
@@ -693,6 +695,8 @@ with t_lib:
                         st.markdown(href, unsafe_allow_html=True)
                     with c2:
                         st.download_button("📊 Analysis CSV", csv_analysis, f"{det.get('courseCode')}_Data.csv", "text/csv", use_container_width=True)
+                    
+                    # REQUIRED: Marks Entry Template (Secure)
                     with c3:
                         if is_final and show_sensitive_info:
                             mark_cols = ['USN', 'Student Name']
