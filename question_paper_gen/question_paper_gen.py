@@ -658,11 +658,12 @@ with t_lib:
                 label = f"✅ {det.get('courseCode')} : {det.get('courseName')} ({det.get('examType')})"
                 
                 with st.expander(label):
-                    # --- 1. PREPARE CSV DATA (With Headers) ---
+                    # --- 1. PREPARE CSV DATA (With Headers & Filtering) ---
                     data_rows = []
                     
-                    # We repeat header info in every row for easier database merging
+                    # Header info repeated for every row
                     header_info = {
+                        "Exam Cycle": det.get('scheduleId', ''), # Added Exam Cycle
                         "Academic Year": det.get('acadYear', ''),
                         "Semester": det.get('semester', ''),
                         "Department": det.get('department', ''),
@@ -673,24 +674,32 @@ with t_lib:
                     }
 
                     for sec in sec_data:
-                        if not sec.get('isNote'): # Skip Instructions
+                        if not sec.get('isNote'): # Skip Note Blocks
                             for q in sec['questions']:
-                                # Merge Header Info + Question Info
-                                row = header_info.copy()
-                                row.update({
-                                    "Q.No": q.get('qNo'),
-                                    "Question Text": q.get('text'),
-                                    "Max Marks": q.get('marks'),
-                                    "CO": q.get('co'),
-                                    "Bloom Level": q.get('level')
-                                })
-                                data_rows.append(row)
+                                # FIX: Convert marks to float and check if > 0
+                                # This removes 'OR', instructions, and zero-mark headers
+                                try:
+                                    marks_val = float(q.get('marks', 0))
+                                except:
+                                    marks_val = 0
+
+                                if marks_val > 0:
+                                    # Merge Header Info + Question Info
+                                    row = header_info.copy()
+                                    row.update({
+                                        "Q.No": q.get('qNo'),
+                                        "Question Text": q.get('text'),
+                                        "Max Marks": marks_val,
+                                        "CO": q.get('co'),
+                                        "Bloom Level": q.get('level')
+                                    })
+                                    data_rows.append(row)
                     
                     if data_rows:
                         df_csv = pd.DataFrame(data_rows)
-                        # Reorder columns to make it logical
-                        cols = ["Academic Year", "Semester", "Exam Type", "Course Code", "Course Name", "Q.No", "Max Marks", "CO", "Bloom Level", "Question Text"]
-                        # Filter to ensure only existing columns are selected (avoids errors if keys missing)
+                        # Reorder columns for logical flow
+                        cols = ["Exam Cycle", "Academic Year", "Semester", "Exam Type", "Course Code", "Course Name", "Q.No", "Max Marks", "CO", "Bloom Level", "Question Text"]
+                        # Filter to ensure only existing columns are selected
                         cols = [c for c in cols if c in df_csv.columns]
                         df_csv = df_csv[cols]
                         
@@ -720,42 +729,7 @@ with t_lib:
                     with c_btn2:
                         # CSV Button (Data)
                         st.download_button(
-                            label="📊 Download CSV (For Result Analysis)",
-                            data=csv_string,
-                            file_name=f"{det.get('courseCode')}_Master_Data.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-
-                    # --- 4. PREVIEW ---
-                    st.markdown("---")
-                    st.caption(f"**Data Preview:**")
-                    if not df_csv.empty:
-                        st.dataframe(df_csv, hide_index=True, use_container_width=True)
-
-                    # --- 2. PREPARE HTML PDF DATA ---
-                    html_content = generate_html(det, sec_data)
-                    b64 = base64.b64encode(html_content.encode()).decode()
-
-                    # --- 3. DISPLAY BUTTONS ---
-                    c_btn1, c_btn2 = st.columns([1, 1])
-                    
-                    with c_btn1:
-                        # HTML Button (Visual)
-                        # We use HTML/Markdown for this button to allow 'download' attribute behavior
-                        href = f'''
-                        <a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}_QP.html" style="text-decoration:none;">
-                            <div style="text-align:center; background-color:#f8fafc; border:1px solid #cbd5e1; color:#334155; padding:8px; border-radius:8px; cursor:pointer; font-weight:600;">
-                                📄 Download Exam Paper (PDF View)
-                            </div>
-                        </a>
-                        '''
-                        st.markdown(href, unsafe_allow_html=True)
-                    
-                    with c_btn2:
-                        # CSV Button (Data)
-                        st.download_button(
-                            label="📊 Download Data CSV (For Results)",
+                            label="📊 Download CSV (Result Analysis)",
                             data=csv_string,
                             file_name=f"{det.get('courseCode')}_Analysis_Data.csv",
                             mime="text/csv",
@@ -764,10 +738,9 @@ with t_lib:
 
                     # --- 4. PREVIEW ---
                     st.markdown("---")
-                    st.caption(f"**Data Preview ({len(data_rows)} Questions):**")
+                    st.caption(f"**Data Preview (Cleaned):**")
                     if not df_csv.empty:
                         st.dataframe(df_csv, hide_index=True, use_container_width=True)
-
 # === TAB 4: CALENDAR ===
 with t_cal:
     st.header("📅 Academic Schedule")
