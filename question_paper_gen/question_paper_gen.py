@@ -89,7 +89,6 @@ def login_user(username, password):
 
 def generate_html(details, sections):
     header_title = f"{details.get('examType', 'Exam')} - {details.get('semester', '')} Semester"
-    # Append Set Type to header if available
     if details.get('setType'): header_title += f" ({details.get('setType')})"
     
     usn_boxes = "".join(['<div class="box"></div>' for _ in range(10)])
@@ -175,7 +174,7 @@ def init_exam_data():
         'acadYear': '2024-2025', 'semester': '', 'examType': '', 'examDate': '',
         'courseName': '', 'courseCode': '', 'maxMarks': 50, 'duration': '90 Mins',
         'preparedBy': '', 'scrutinizedBy': '', 'approvedBy': '', 'scheduleId': '',
-        'setType': 'Set A' # REQUIRED: Support for Set A/B
+        'setType': 'Set A' 
     }
 
 if 'exam_details' not in st.session_state:
@@ -226,10 +225,12 @@ with st.sidebar:
         with st.expander("📋 Active Schedules", expanded=True):
             if db:
                 try:
-                    sch_ref = db.collection("exam_schedule").stream()
+                    # Optimized: Cache schedules to avoid fetching on every interaction
+                    if 'cycles_cache' not in st.session_state or st.button("🔄 Refresh List"):
+                        st.session_state.cycles_cache = list(db.collection("exam_schedule").stream())
+
                     schedules_found = False
-                    
-                    for s in sch_ref:
+                    for s in st.session_state.cycles_cache:
                         schedules_found = True
                         sd = s.to_dict()
                         st.markdown(f"**{sd.get('cycle_id')}**")
@@ -237,13 +238,14 @@ with st.sidebar:
                         st.text(f"Subjects: {len(sd.get('subjects', []))}")
                         if st.button("🗑️", key=f"del_{s.id}"):
                             db.collection("exam_schedule").document(s.id).delete()
+                            del st.session_state.cycles_cache # Clear cache on modify
                             st.rerun()
                         st.divider()
                         
                     if not schedules_found: st.caption("No active cycles.")
                 except Exception as e: st.error(f"DB Error: {e}")
 
-        # --- UPLOAD SCHEDULES ---
+        # --- UPLOAD SCHEDULES (OPTIMIZED WITH FORM) ---
         with st.expander("📅 Upload New Schedule"):
             st.info("Upload Time Table CSV.")
             with st.form("cycle_form"):
@@ -273,13 +275,15 @@ with st.sidebar:
                                 'created_at': str(datetime.datetime.now())
                             }
                             db.collection("exam_schedule").document(cy_id).set(doc_data)
+                            if 'cycles_cache' in st.session_state: del st.session_state.cycles_cache
                             st.success(f"✅ Success! Uploaded {len(subjects_data)} subjects.")
                             time.sleep(1)
                             st.rerun()
                         except Exception as e: st.error(f"❌ Error: {e}")
 
+        # --- ADD USER (OPTIMIZED WITH FORM) ---
         with st.expander("Add User"):
-            with st.form("new_u"):
+            with st.form("new_u_form"):
                 nu = st.text_input("User ID"); nn = st.text_input("Full Name"); np = st.text_input("Password", type="password")
                 nr = st.selectbox("Role", ["faculty", "scrutinizer", "approver", "admin"]); nd = st.selectbox("Dept", DEPTS)
                 if st.form_submit_button("Create") and db:
@@ -293,29 +297,35 @@ t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "�
 with t_inbox:
     # --- ADMIN DASHBOARD TOGGLE ---
     view_mode = "List"
-    selected_cycle = None
     
     if role == 'admin':
         c_mode, c_refresh = st.columns([6, 1])
         with c_mode:
-            # REQUIRED: Added "QP Selection" to the options
             view_mode = st.radio("View Mode", ["📂 Inbox (Tasks)", "📊 Status Dashboard", "🔐 QP Selection (COE)"], horizontal=True, label_visibility="collapsed")
         with c_refresh:
-            if st.button("🔄"): st.session_state.inbox_cache = []
+            if st.button("🔄"): 
+                if 'inbox_cache' in st.session_state: del st.session_state.inbox_cache
+                if 'cycles_cache' in st.session_state: del st.session_state.cycles_cache
+                st.rerun()
 
     # ----------------------------------
     # VIEW 1: STATUS DASHBOARD (ADMIN)
     # ----------------------------------
     if role == 'admin' and view_mode == "📊 Status Dashboard":
         st.markdown("### 📊 Exam Cycle Compliance")
-        cycles = []
-        if db: cycles = [d.id for d in db.collection("exam_schedule").stream()]
+        
+        # Use Cached Cycles
+        if 'cycles_cache' not in st.session_state and db:
+             st.session_state.cycles_cache = list(db.collection("exam_schedule").stream())
+        
+        cycles = [d.id for d in st.session_state.get('cycles_cache', [])]
         
         if not cycles:
             st.warning("No exam schedules found. Upload a schedule in the Sidebar first.")
         else:
             sel_cycle = st.selectbox("Select Exam Cycle", cycles)
             if sel_cycle and db:
+                # We need fresh status data here to ensure accuracy, so we fetch submitted_docs
                 sch_doc = db.collection("exam_schedule").document(sel_cycle).get()
                 expected_subjects = sch_doc.to_dict().get('subjects', [])
                 submitted_docs = list(db.collection("exams").where("exam_details.scheduleId", "==", sel_cycle).stream())
@@ -353,7 +363,7 @@ with t_inbox:
                     if completed_list: st.dataframe(pd.DataFrame(completed_list), hide_index=True, use_container_width=True)
 
     # ----------------------------------
-    # VIEW 3: QP SELECTION (COE ONLY) - REQUIRED
+    # VIEW 3: QP SELECTION (COE ONLY)
     # ----------------------------------
     elif role == 'admin' and view_mode == "🔐 QP Selection (COE)":
         st.markdown("### 🔐 Final Exam Selection (Lottery)")
@@ -407,7 +417,8 @@ with t_inbox:
             col_fil1, col_fil2 = st.columns([1, 4])
             with col_fil1: filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
         
-        if st.button("🔄 Refresh Inbox") or 'inbox_cache' not in st.session_state:
+        # Optimized: Only fetch if cache is empty or refresh requested
+        if 'inbox_cache' not in st.session_state:
             docs = []
             if db:
                 ref = db.collection("exams")
@@ -480,6 +491,7 @@ with t_edit:
                 active_subjects = []
                 if db:
                     try:
+                        # Cached cycles logic reused here if possible, but simplicity is safer for now
                         all_cycles = db.collection("exam_schedule").stream()
                         today = datetime.date.today()
                         for cy in all_cycles:
@@ -528,7 +540,7 @@ with t_edit:
         st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", st.session_state.exam_details.get('examDate'), disabled=input_disabled)
         st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=input_disabled)
         
-        # --- REQUIRED: QP SET SELECTOR ---
+        # --- QP SET SELECTOR ---
         set_opts = ["Set A", "Set B", "Set C"]
         curr_set = st.session_state.exam_details.get('setType', 'Set A')
         st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set) if curr_set in set_opts else 0, disabled=read_only)
@@ -588,7 +600,6 @@ with t_edit:
     if not current_id and d['courseCode']:
         safe_ay = str(d['acadYear']).replace(" ", "")
         safe_set = str(d.get('setType', 'Set A')).replace(" ", "")
-        # REQUIRED: Set ID Generation
         current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}_{safe_set}"
 
     c1, c2, c3 = st.columns(3)
@@ -624,23 +635,37 @@ with t_edit:
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html, height=800, scrolling=True)
 
-# === TAB 3: LIBRARY (SECURE) ===
+# === TAB 3: LIBRARY (SECURE & OPTIMIZED) ===
 with t_lib:
     st.header("📚 Exam Archive")
     st.caption("Access approved papers and result templates.")
 
     if db:
-        # 1. DATE SECURITY CHECK - REQUIRED
+        # Optimized: Cache Library Docs
+        c_ref, c_h = st.columns([1, 5])
+        if c_ref.button("🔄 Refresh Library"): 
+            if 'lib_cache' in st.session_state: del st.session_state.lib_cache
+
+        if 'lib_cache' not in st.session_state:
+            st.session_state.lib_cache = list(db.collection("exams").where("status", "==", "APPROVED").stream())
+        
+        docs = st.session_state.lib_cache
+
+        # 1. DATE SECURITY CHECK
         schedule_end_dates = {}
         try:
-            sch_ref = db.collection("exam_schedule").stream()
+            # We also cache this schedule data implicitly or explicitly
+            # Since it's small, fetching every time or using admin cache is fine.
+            # Let's use cache if available or fetch
+            sch_ref = st.session_state.get('cycles_cache', [])
+            if not sch_ref: sch_ref = db.collection("exam_schedule").stream()
+            
             for s in sch_ref:
                 sd = s.to_dict()
                 end_str = sd.get('submission_end', '').split(' ')[0]
                 schedule_end_dates[s.id] = datetime.datetime.strptime(end_str, "%Y-%m-%d").date()
         except: pass
 
-        docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
         if not docs: st.info("📭 No approved question papers found yet.")
         else:
             docs.sort(key=lambda x: x.to_dict().get('exam_details', {}).get('courseCode', ''))
