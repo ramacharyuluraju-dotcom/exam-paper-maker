@@ -70,7 +70,7 @@ firebase_ready = init_firebase()
 
 # --- 3. HELPER FUNCTIONS ---
 def hash_password(password):
-    return hashlib.sha256(str.encode(password)).hexdigest()
+    return hashlib.sha256(str.encode(str(password))).hexdigest()
 
 def get_key_from_password(password, salt_type='new'):
     salt = b'static_salt_for_amc_exam_app' if salt_type == 'new' else b'static_salt_for_exam_app'
@@ -225,7 +225,6 @@ with st.sidebar:
         with st.expander("📋 Active Schedules", expanded=True):
             if db:
                 try:
-                    # Optimized: Cache schedules to avoid fetching on every interaction
                     if 'cycles_cache' not in st.session_state or st.button("🔄 Refresh List"):
                         st.session_state.cycles_cache = list(db.collection("exam_schedule").stream())
 
@@ -238,14 +237,14 @@ with st.sidebar:
                         st.text(f"Subjects: {len(sd.get('subjects', []))}")
                         if st.button("🗑️", key=f"del_{s.id}"):
                             db.collection("exam_schedule").document(s.id).delete()
-                            del st.session_state.cycles_cache # Clear cache on modify
+                            del st.session_state.cycles_cache 
                             st.rerun()
                         st.divider()
                         
                     if not schedules_found: st.caption("No active cycles.")
                 except Exception as e: st.error(f"DB Error: {e}")
 
-        # --- UPLOAD SCHEDULES (OPTIMIZED WITH FORM) ---
+        # --- UPLOAD SCHEDULES ---
         with st.expander("📅 Upload New Schedule"):
             st.info("Upload Time Table CSV.")
             with st.form("cycle_form"):
@@ -281,21 +280,73 @@ with st.sidebar:
                             st.rerun()
                         except Exception as e: st.error(f"❌ Error: {e}")
 
-        # --- ADD USER (OPTIMIZED WITH FORM) ---
-        with st.expander("Add User"):
-            with st.form("new_u_form"):
-                nu = st.text_input("User ID"); nn = st.text_input("Full Name"); np = st.text_input("Password", type="password")
-                nr = st.selectbox("Role", ["faculty", "scrutinizer", "approver", "admin"]); nd = st.selectbox("Dept", DEPTS)
-                if st.form_submit_button("Create") and db:
-                    db.collection("users").document(nu).set({'name':nn, 'password':hash_password(np), 'role':nr, 'department':nd})
-                    st.success("Added!")
+        # --- ADD USER (MANUAL & BULK CSV) ---
+        with st.expander("Add User / Bulk Upload"):
+            ut1, ut2 = st.tabs(["👤 Manual", "📂 Bulk CSV"])
+            
+            # TAB 1: MANUAL
+            with ut1:
+                with st.form("new_u_form"):
+                    nu = st.text_input("User ID")
+                    nn = st.text_input("Full Name")
+                    np = st.text_input("Password", type="password")
+                    nr = st.selectbox("Role", ["faculty", "scrutinizer", "approver", "admin"])
+                    nd = st.selectbox("Dept", DEPTS)
+                    if st.form_submit_button("Create") and db:
+                        db.collection("users").document(nu).set({'name':nn, 'password':hash_password(np), 'role':nr, 'department':nd})
+                        st.success("User Added!")
+            
+            # TAB 2: BULK UPLOAD
+            with ut2:
+                st.info("Required Columns: `id`, `name`, `password`, `role`, `department`")
+                u_csv = st.file_uploader("Upload Users CSV", type=['csv'])
+                if u_csv:
+                    if st.button("🚀 Process Bulk Upload"):
+                        if not db: st.error("No DB Connection")
+                        else:
+                            try:
+                                df_u = pd.read_csv(u_csv)
+                                # Normalize column names to lowercase/strip
+                                df_u.columns = df_u.columns.str.strip().str.lower()
+                                required = {'id', 'name', 'password', 'role', 'department'}
+                                
+                                if not required.issubset(df_u.columns):
+                                    st.error(f"Missing columns! Found: {list(df_u.columns)}")
+                                else:
+                                    count = 0
+                                    progress = st.progress(0)
+                                    total = len(df_u)
+                                    
+                                    batch = db.batch()
+                                    for idx, row in df_u.iterrows():
+                                        uid = str(row['id']).strip()
+                                        u_data = {
+                                            'name': str(row['name']),
+                                            'password': hash_password(str(row['password'])),
+                                            'role': str(row['role']).lower(),
+                                            'department': str(row['department'])
+                                        }
+                                        ref = db.collection("users").document(uid)
+                                        batch.set(ref, u_data)
+                                        
+                                        # Commit every 400 writes (Firestore batch limit is 500)
+                                        if (idx + 1) % 400 == 0:
+                                            batch.commit()
+                                            batch = db.batch()
+                                            
+                                        count += 1
+                                        progress.progress(count / total)
+                                    
+                                    batch.commit() # Commit remaining
+                                    st.success(f"✅ Successfully added {count} users!")
+                                    time.sleep(1); st.rerun()
+                            except Exception as e: st.error(f"Error: {e}")
 
 # --- 8. DASHBOARD TABS ---
 t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
 
 # === TAB 1: INBOX & DASHBOARD ===
 with t_inbox:
-    # --- ADMIN DASHBOARD TOGGLE ---
     view_mode = "List"
     
     if role == 'admin':
@@ -308,13 +359,9 @@ with t_inbox:
                 if 'cycles_cache' in st.session_state: del st.session_state.cycles_cache
                 st.rerun()
 
-    # ----------------------------------
-    # VIEW 1: STATUS DASHBOARD (ADMIN)
-    # ----------------------------------
     if role == 'admin' and view_mode == "📊 Status Dashboard":
         st.markdown("### 📊 Exam Cycle Compliance")
         
-        # Use Cached Cycles
         if 'cycles_cache' not in st.session_state and db:
              st.session_state.cycles_cache = list(db.collection("exam_schedule").stream())
         
@@ -325,7 +372,6 @@ with t_inbox:
         else:
             sel_cycle = st.selectbox("Select Exam Cycle", cycles)
             if sel_cycle and db:
-                # We need fresh status data here to ensure accuracy, so we fetch submitted_docs
                 sch_doc = db.collection("exam_schedule").document(sel_cycle).get()
                 expected_subjects = sch_doc.to_dict().get('subjects', [])
                 submitted_docs = list(db.collection("exams").where("exam_details.scheduleId", "==", sel_cycle).stream())
@@ -362,9 +408,6 @@ with t_inbox:
                     st.success(f"✅ Submitted ({len(completed_list)})")
                     if completed_list: st.dataframe(pd.DataFrame(completed_list), hide_index=True, use_container_width=True)
 
-    # ----------------------------------
-    # VIEW 3: QP SELECTION (COE ONLY)
-    # ----------------------------------
     elif role == 'admin' and view_mode == "🔐 QP Selection (COE)":
         st.markdown("### 🔐 Final Exam Selection (Lottery)")
         st.info("Select the final paper to be printed. This determines the columns for the IA Marks Entry CSV.")
@@ -407,9 +450,6 @@ with t_inbox:
                                     db.collection("exams").document(doc.id).update({'is_final_exam': True})
                                     st.rerun()
 
-    # ----------------------------------
-    # VIEW 2: STANDARD INBOX
-    # ----------------------------------
     else:
         st.markdown(f"### 📥 {role.capitalize()} Inbox")
         filter_dept = "All"
@@ -417,7 +457,6 @@ with t_inbox:
             col_fil1, col_fil2 = st.columns([1, 4])
             with col_fil1: filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
         
-        # Optimized: Only fetch if cache is empty or refresh requested
         if 'inbox_cache' not in st.session_state:
             docs = []
             if db:
@@ -473,7 +512,6 @@ with t_edit:
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
         st.warning("🔒 View Only Mode (Exam Submitted)"); read_only = True
 
-    # SECTION A: HEADER & SETTINGS
     with st.expander("📝 Exam Header & Settings", expanded=True):
         user_dept = st.session_state.user.get('department')
         manual_entry = False
@@ -491,7 +529,6 @@ with t_edit:
                 active_subjects = []
                 if db:
                     try:
-                        # Cached cycles logic reused here if possible, but simplicity is safer for now
                         all_cycles = db.collection("exam_schedule").stream()
                         today = datetime.date.today()
                         for cy in all_cycles:
@@ -540,7 +577,6 @@ with t_edit:
         st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", st.session_state.exam_details.get('examDate'), disabled=input_disabled)
         st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=input_disabled)
         
-        # --- QP SET SELECTOR ---
         set_opts = ["Set A", "Set B", "Set C"]
         curr_set = st.session_state.exam_details.get('setType', 'Set A')
         st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set) if curr_set in set_opts else 0, disabled=read_only)
@@ -559,7 +595,6 @@ with t_edit:
         st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only)
         st.session_state.exam_details['approvedBy'] = s3.text_input("Approved By", value=st.session_state.exam_details.get('approvedBy', ''), disabled=read_only)
 
-    # SECTION B: QUESTIONS EDITOR
     st.markdown("#### Questions Editor")
     for i, section in enumerate(st.session_state.sections):
         with st.container():
@@ -593,7 +628,6 @@ with t_edit:
         if b1.button("➕ New Question Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
         if b2.button("➕ Add Instruction"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
 
-    # SECTION C: ACTIONS
     st.markdown("### Actions")
     current_id = st.session_state.get('current_doc_id')
     d = st.session_state.exam_details
@@ -641,7 +675,6 @@ with t_lib:
     st.caption("Access approved papers and result templates.")
 
     if db:
-        # Optimized: Cache Library Docs
         c_ref, c_h = st.columns([1, 5])
         if c_ref.button("🔄 Refresh Library"): 
             if 'lib_cache' in st.session_state: del st.session_state.lib_cache
@@ -651,12 +684,8 @@ with t_lib:
         
         docs = st.session_state.lib_cache
 
-        # 1. DATE SECURITY CHECK
         schedule_end_dates = {}
         try:
-            # We also cache this schedule data implicitly or explicitly
-            # Since it's small, fetching every time or using admin cache is fine.
-            # Let's use cache if available or fetch
             sch_ref = st.session_state.get('cycles_cache', [])
             if not sch_ref: sch_ref = db.collection("exam_schedule").stream()
             
@@ -674,7 +703,6 @@ with t_lib:
                 det = d.get('exam_details', {})
                 sec_data = d.get('sections', [])
                 
-                # Check Visibility Rules
                 cycle_id = det.get('scheduleId')
                 cycle_end = schedule_end_dates.get(cycle_id)
                 today = datetime.date.today()
@@ -692,7 +720,6 @@ with t_lib:
                         else: st.info("🔒 Status: Approved (Selection Hidden until Exam Cycle Ends)")
                     else: st.write(f"Status: Approved Backup ({det.get('setType')})")
 
-                    # CSV Generation
                     data_rows = []
                     header_info = {
                         "Exam Cycle": det.get('scheduleId', ''), "Academic Year": det.get('acadYear', ''),
@@ -721,7 +748,6 @@ with t_lib:
                     with c2:
                         st.download_button("📊 Analysis CSV", csv_analysis, f"{det.get('courseCode')}_Data.csv", "text/csv", use_container_width=True)
                     
-                    # REQUIRED: Marks Entry Template (Secure)
                     with c3:
                         if is_final and show_sensitive_info:
                             mark_cols = ['USN', 'Student Name']
