@@ -31,7 +31,8 @@ def load_custom_css():
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); border: 1px solid #cbd5e1;
             padding: 20px; margin-bottom: 1rem;
         }}
-        input, textarea, select {{ background-color: #ffffff !important; color: #000000 !important; border: 1px solid #cbd5e1; font-weight: 600 !important; }}
+        input, textarea, select {{ background-color: #ffffff !important; color: #000000 !important;
+        border: 1px solid #cbd5e1; font-weight: 600 !important; }}
         button[kind="primary"] {{ background-color: #2563eb !important; color: white !important; border: none; }}
         .badge {{ padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; }}
         .badge-draft {{ background: #e2e8f0; color: #334155; }}
@@ -145,7 +146,7 @@ def generate_html(details, sections):
                 <span><b>Course:</b> {details.get('courseName')}</span>
                 <span><b>Code:</b> {details.get('courseCode')}</span>
             </div>
-             <div class="meta">
+            <div class="meta">
                 <span><b>Date:</b> {details.get('examDate')}</span>
                 <span><b>Duration:</b> {details.get('duration')}</span>
                 <span><b>Max Marks:</b> {details.get('maxMarks')}</span>
@@ -306,7 +307,6 @@ with st.sidebar:
                         else:
                             try:
                                 df_u = pd.read_csv(u_csv)
-                                # Normalize column names to lowercase/strip
                                 df_u.columns = df_u.columns.str.strip().str.lower()
                                 required = {'id', 'name', 'password', 'role', 'department'}
                                 
@@ -329,15 +329,14 @@ with st.sidebar:
                                         ref = db.collection("users").document(uid)
                                         batch.set(ref, u_data)
                                         
-                                        # Commit every 400 writes (Firestore batch limit is 500)
                                         if (idx + 1) % 400 == 0:
                                             batch.commit()
                                             batch = db.batch()
-                                            
+                                        
                                         count += 1
                                         progress.progress(count / total)
                                     
-                                    batch.commit() # Commit remaining
+                                    batch.commit() 
                                     st.success(f"✅ Successfully added {count} users!")
                                     time.sleep(1); st.rerun()
                             except Exception as e: st.error(f"Error: {e}")
@@ -498,13 +497,11 @@ with t_inbox:
                             st.success("Loaded!")
                             st.rerun()
 
-import time # Ensure time is imported for better ID generation
-
-# === TAB 2: EDITOR (Final Fix: Keys Added to All Buttons) ===
+# === TAB 2: EDITOR (FIXED & COMPLETE) ===
 with t_edit:
-    # --- 1. AUTO-SAVE FUNCTION ---
-    def auto_save():
-        """Silently saves the draft to Firestore without reloading the whole page."""
+    # --- 1. FUNCTIONS ---
+    def save_draft():
+        """Saves current state to DB."""
         if st.session_state.get('current_doc_id') and st.session_state.get('user'):
             try:
                 doc_id = st.session_state.current_doc_id
@@ -517,14 +514,14 @@ with t_edit:
                     'last_saved': str(datetime.datetime.now())
                 }
                 if db:
-                    db.collection("exams").document(doc_id).update(data)
-                    st.toast("💾 Draft Auto-Saved", icon="✅")
+                    db.collection("exams").document(doc_id).set(data) # Use set to create or update
+                    st.toast("💾 Draft Saved Successfully", icon="✅")
             except Exception as e:
-                pass 
+                st.error(f"Save Failed: {e}")
 
-    # --- 2. TOP BAR (RESET) ---
+    # --- 2. TOP BAR ---
     col_rst, col_fill = st.columns([1, 4])
-    if col_rst.button("🆕 New Exam / Reset", key="btn_reset_all"):
+    if col_rst.button("🆕 New Exam / Reset", key="btn_rst_main"):
         st.session_state.current_doc_id = None
         st.session_state.current_doc_status = "NEW"
         st.session_state.exam_details = init_exam_data()
@@ -535,8 +532,13 @@ with t_edit:
     if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
         st.warning("🔒 View Only Mode (Exam Submitted)")
         read_only = True
+    
+    # Auto-Save Toggle
+    auto_save_enabled = False
+    if not read_only:
+        auto_save_enabled = st.toggle("⚡ Enable Auto-Save (Saves at end of interaction)", value=False)
 
-    # --- 3. EXAM HEADER & SUBJECT SELECTION ---
+    # --- 3. EXAM HEADER & SETTINGS ---
     with st.expander("📝 Exam Header & Settings", expanded=True):
         user_dept = st.session_state.user.get('department')
         manual_entry = False
@@ -547,9 +549,10 @@ with t_edit:
             ignore_dates = c_tog2.checkbox("🗓️ Ignore Date Restrictions", value=True) 
             
             if not manual_entry:
+                # 1. Fetch Active Subjects
                 dept_index = 0
                 if user_dept in DEPTS: dept_index = DEPTS.index(user_dept)
-                sel_branch = st.selectbox("📂 Select Branch", DEPTS, index=dept_index)
+                sel_branch = st.selectbox("📂 Select Branch", DEPTS, index=dept_index, key="sel_br_main")
                 
                 active_subjects = []
                 if db:
@@ -573,7 +576,7 @@ with t_edit:
                             except: continue
                     except: pass
 
-                # Handle "Lost Subject" Scenario
+                # 2. Logic to prevent losing loaded subject
                 current_code = st.session_state.exam_details.get('courseCode')
                 current_name = st.session_state.exam_details.get('courseName', 'Unknown')
                 
@@ -592,7 +595,8 @@ with t_edit:
                         opts.append(f"{current_code} : {current_name} (Saved)")
                         current_idx = len(opts) - 1
 
-                sel = st.selectbox("📌 Select Subject", opts, index=current_idx, key='sub_sel')
+                # 3. Dropdown
+                sel = st.selectbox("📌 Select Subject", opts, index=current_idx, key='sub_sel_final')
 
                 if sel and sel != "-- Select --":
                     selected_code = sel.split(' : ')[0].strip()
@@ -614,121 +618,119 @@ with t_edit:
         input_disabled = True
         if manual_entry and not read_only: input_disabled = False
         
-        # --- 4. HEADER INPUTS ---
+        # --- HEADER INPUTS (Explicit Keys) ---
         c1, c2, c3, c4 = st.columns(4)
-        st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", value=st.session_state.exam_details.get('acadYear', ''), disabled=input_disabled, on_change=auto_save, key="inp_ay")
-        st.session_state.exam_details['department'] = c2.text_input("Department", value=st.session_state.exam_details.get('department', ''), disabled=read_only, on_change=auto_save, key="inp_dept")
-        st.session_state.exam_details['semester'] = c3.text_input("Semester", value=st.session_state.exam_details.get('semester', ''), disabled=input_disabled, on_change=auto_save, key="inp_sem")
-        st.session_state.exam_details['examType'] = c4.text_input("Exam Type", value=st.session_state.exam_details.get('examType', ''), disabled=input_disabled, on_change=auto_save, key="inp_type")
+        st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", value=st.session_state.exam_details.get('acadYear', ''), disabled=input_disabled, key="inp_ay")
+        st.session_state.exam_details['department'] = c2.text_input("Department", value=st.session_state.exam_details.get('department', ''), disabled=read_only, key="inp_dept")
+        st.session_state.exam_details['semester'] = c3.text_input("Semester", value=st.session_state.exam_details.get('semester', ''), disabled=input_disabled, key="inp_sem")
+        st.session_state.exam_details['examType'] = c4.text_input("Exam Type", value=st.session_state.exam_details.get('examType', ''), disabled=input_disabled, key="inp_type")
 
         c1, c2, c3, c4 = st.columns(4) 
-        st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", value=st.session_state.exam_details.get('examDate', ''), disabled=input_disabled, on_change=auto_save, key="inp_date")
-        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", value=st.session_state.exam_details.get('courseCode', ''), disabled=input_disabled, on_change=auto_save, key="inp_code")
+        st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", value=st.session_state.exam_details.get('examDate', ''), disabled=input_disabled, key="inp_date")
+        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", value=st.session_state.exam_details.get('courseCode', ''), disabled=input_disabled, key="inp_code")
         
         set_opts = ["Set A", "Set B", "Set C"]
         curr_set = st.session_state.exam_details.get('setType', 'Set A')
         if curr_set not in set_opts: curr_set = "Set A"
-        st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set), disabled=read_only, on_change=auto_save, key="inp_set")
+        st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set), disabled=read_only, key="inp_set")
         
-        st.session_state.exam_details['courseName'] = c4.text_input("Course Name", value=st.session_state.exam_details.get('courseName', ''), disabled=input_disabled, on_change=auto_save, key="inp_name")
+        st.session_state.exam_details['courseName'] = c4.text_input("Course Name", value=st.session_state.exam_details.get('courseName', ''), disabled=input_disabled, key="inp_name")
 
         st.markdown("**⚙️ Paper Settings & Signatories**")
         c1, c2 = st.columns(2)
-        st.session_state.exam_details['duration'] = c1.text_input("Duration", value=st.session_state.exam_details.get('duration', ''), disabled=read_only, on_change=auto_save, key="inp_dur")
-        st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only, on_change=auto_save, key="inp_max")
+        st.session_state.exam_details['duration'] = c1.text_input("Duration", value=st.session_state.exam_details.get('duration', ''), disabled=read_only, key="inp_dur")
+        st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only, key="inp_max")
 
         s1, s2, s3 = st.columns(3)
         def_prep = st.session_state.exam_details.get('preparedBy')
         if not def_prep: def_prep = st.session_state.user.get('name', 'Faculty')
-        st.session_state.exam_details['preparedBy'] = s1.text_input("Prepared By", value=def_prep, disabled=read_only, on_change=auto_save, key="inp_prep")
-        st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only, on_change=auto_save, key="inp_scr")
-        st.session_state.exam_details['approvedBy'] = s3.text_input("Approved By", value=st.session_state.exam_details.get('approvedBy', ''), disabled=read_only, on_change=auto_save, key="inp_app")
+        st.session_state.exam_details['preparedBy'] = s1.text_input("Prepared By", value=def_prep, disabled=read_only, key="inp_prep")
+        st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only, key="inp_scr")
+        st.session_state.exam_details['approvedBy'] = s3.text_input("Approved By", value=st.session_state.exam_details.get('approvedBy', ''), disabled=read_only, key="inp_app")
 
-    # --- 5. QUESTIONS EDITOR ---
+    # --- 4. QUESTIONS EDITOR ---
     st.markdown("#### Questions Editor")
     
-    # We use enumerate(i) to make keys unique even if IDs are duplicates
+    # Enumerate helps ensure unique keys even if IDs clash
     for i, section in enumerate(st.session_state.sections):
         with st.container():
             st.markdown(f"**Block {i+1}**")
             if section.get('isNote'):
                 c_del, c_txt = st.columns([1, 10])
-                if not read_only and c_del.button("🗑️", key=f"dels_{section['id']}_{i}"): 
+                if not read_only and c_del.button("🗑️", key=f"del_sec_{i}_{section['id']}"): 
                     st.session_state.sections.pop(i)
-                    auto_save()
                     st.rerun()
-                section['text'] = c_txt.text_input("Instruction", section['text'], key=f"n_{section['id']}_{i}", disabled=read_only, on_change=auto_save)
+                section['text'] = c_txt.text_input("Instruction", section['text'], key=f"note_{i}_{section['id']}", disabled=read_only)
             else:
                 h1, h2 = st.columns([10, 1])
-                if not read_only and h2.button("🗑️", key=f"dels_{section['id']}_{i}"): 
+                if not read_only and h2.button("🗑️", key=f"del_blk_{i}_{section['id']}"): 
                     st.session_state.sections.pop(i)
-                    auto_save()
                     st.rerun()
                 
                 for j, q in enumerate(section['questions']):
                     c1, c2 = st.columns([1, 8])
-                    q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
-                    q['text'] = c2.text_area("Question", q['text'], height=70, key=f"qt_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
+                    q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{i}_{j}_{q['id']}", disabled=read_only)
+                    q['text'] = c2.text_area("Question", q['text'], height=70, key=f"qt_{i}_{j}_{q['id']}", disabled=read_only)
                     
                     if q['text'].strip().upper() != 'OR':
                         m1, m2, m3, m4 = st.columns([2,2,2,1])
-                        q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
-                        q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
-                        q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
-                        if not read_only and m4.button("❌", key=f"dq_{q['id']}_{i}_{j}"): 
+                        q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{i}_{j}_{q['id']}", disabled=read_only)
+                        q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{i}_{j}_{q['id']}", disabled=read_only)
+                        q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{i}_{j}_{q['id']}", disabled=read_only)
+                        if not read_only and m4.button("❌", key=f"rm_q_{i}_{j}_{q['id']}"): 
                             section['questions'].pop(j)
-                            auto_save()
                             st.rerun()
                 
-                if not read_only and st.button("➕ Add Question", key=f"addq_{section['id']}_{i}"):
+                if not read_only and st.button("➕ Add Question", key=f"add_q_btn_{i}_{section['id']}"):
                     new_q_id = int(time.time() * 1000000)
                     section['questions'].append({'id': new_q_id, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'})
-                    auto_save()
                     st.rerun()
 
     if not read_only:
         st.divider()
         b1, b2 = st.columns(2)
-        # CRASH FIX: Added explicit 'key' arguments here
-        if b1.button("➕ New Question Block", key="btn_add_block"): 
+        if b1.button("➕ New Question Block", key="btn_add_block_main"): 
             new_id = int(time.time() * 1000000)
             st.session_state.sections.append({'id': new_id, 'isNote': False, 'questions': [{'id': new_id+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]})
-            auto_save()
             st.rerun()
-        if b2.button("➕ Add Instruction", key="btn_add_instr"): 
+        if b2.button("➕ Add Instruction", key="btn_add_instr_main"): 
             new_id = int(time.time() * 1000000)
             st.session_state.sections.append({'id': new_id, 'isNote': True, 'text': 'Note: Answer any five questions'})
-            auto_save()
             st.rerun()
 
-    # --- 6. ACTIONS ---
+    # --- 5. ACTIONS ---
     st.markdown("### Actions")
     current_id = st.session_state.get('current_doc_id')
     d = st.session_state.exam_details
     
+    # Auto-generate ID if subject is selected but ID is missing
     if not current_id and d['courseCode']:
         safe_ay = str(d['acadYear']).replace(" ", "")
         safe_set = str(d.get('setType', 'Set A')).replace(" ", "")
         current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}_{safe_set}"
         st.session_state.current_doc_id = current_id
 
+    # Auto-Save Logic (Executed at end of script run if enabled)
+    if auto_save_enabled and current_id and not read_only:
+        save_draft()
+
     c1, c2, c3 = st.columns(3)
     if role in ['faculty', 'admin']:
-        if c1.button("💾 Force Save", key="btn_force_save"):
+        if c1.button("💾 Save Draft", key="btn_save_man"):
             if not d['courseCode']: st.error("Select a subject first.")
             elif db:
-                auto_save()
-                st.success(f"Saved: {current_id}")
+                save_draft() # Manual save always works
 
-        if c2.button("📤 Submit for Review", type="primary", key="btn_submit_rev"):
+        if c2.button("📤 Submit for Review", type="primary", key="btn_sub_rev"):
             if not current_id: st.error("Save Draft first")
             elif db:
+                save_draft() # Ensure latest state is saved
                 db.collection("exams").document(current_id).update({'status': 'SUBMITTED', 'exam_details.preparedBy': st.session_state.exam_details.get('preparedBy')})
                 st.session_state.current_doc_status = "SUBMITTED"
                 st.success("Submitted successfully!")
 
     if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
-        comm = st.text_area("Scrutiny Comments", key="txt_comments")
+        comm = st.text_area("Scrutiny Comments", key="scru_comm_area")
         if c1.button("Return for Revision", key="btn_ret_rev") and db: db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
         if c2.button("Approve & Forward", type="primary", key="btn_app_fwd") and db: db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user.get('name', 'Scrutinizer')}); st.success("Approved"); st.rerun()
 
@@ -738,321 +740,100 @@ with t_edit:
     with st.expander("👁️ Live Preview"):
         html = generate_html(st.session_state.exam_details, st.session_state.sections)
         st.components.v1.html(html, height=800, scrolling=True)
+
+# === TAB 3: LIBRARY (SECURE) ===
+with t_lib:
+    st.header("📚 Exam Archive")
+    st.caption("Access approved papers and result templates.")
+
+    if db:
+        c_ref, c_h = st.columns([1, 5])
+        if c_ref.button("🔄 Refresh Library"): 
+            if 'lib_cache' in st.session_state: del st.session_state.lib_cache
+
+        if 'lib_cache' not in st.session_state:
+            st.session_state.lib_cache = list(db.collection("exams").where("status", "==", "APPROVED").stream())
         
-        # --- 4. HEADER INPUTS ---
-        c1, c2, c3, c4 = st.columns(4)
-        st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", value=st.session_state.exam_details.get('acadYear', ''), disabled=input_disabled, on_change=auto_save, key="inp_ay")
-        st.session_state.exam_details['department'] = c2.text_input("Department", value=st.session_state.exam_details.get('department', ''), disabled=read_only, on_change=auto_save, key="inp_dept")
-        st.session_state.exam_details['semester'] = c3.text_input("Semester", value=st.session_state.exam_details.get('semester', ''), disabled=input_disabled, on_change=auto_save, key="inp_sem")
-        st.session_state.exam_details['examType'] = c4.text_input("Exam Type", value=st.session_state.exam_details.get('examType', ''), disabled=input_disabled, on_change=auto_save, key="inp_type")
+        docs = st.session_state.lib_cache
 
-        c1, c2, c3, c4 = st.columns(4) 
-        st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", value=st.session_state.exam_details.get('examDate', ''), disabled=input_disabled, on_change=auto_save, key="inp_date")
-        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", value=st.session_state.exam_details.get('courseCode', ''), disabled=input_disabled, on_change=auto_save, key="inp_code")
-        
-        set_opts = ["Set A", "Set B", "Set C"]
-        curr_set = st.session_state.exam_details.get('setType', 'Set A')
-        if curr_set not in set_opts: curr_set = "Set A"
-        st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set), disabled=read_only, on_change=auto_save, key="inp_set")
-        
-        st.session_state.exam_details['courseName'] = c4.text_input("Course Name", value=st.session_state.exam_details.get('courseName', ''), disabled=input_disabled, on_change=auto_save, key="inp_name")
+        schedule_end_dates = {}
+        try:
+            sch_ref = st.session_state.get('cycles_cache', [])
+            if not sch_ref: sch_ref = db.collection("exam_schedule").stream()
+            
+            for s in sch_ref:
+                sd = s.to_dict()
+                end_str = sd.get('submission_end', '').split(' ')[0]
+                schedule_end_dates[s.id] = datetime.datetime.strptime(end_str, "%Y-%m-%d").date()
+        except: pass
 
-        st.markdown("**⚙️ Paper Settings & Signatories**")
-        c1, c2 = st.columns(2)
-        st.session_state.exam_details['duration'] = c1.text_input("Duration", value=st.session_state.exam_details.get('duration', ''), disabled=read_only, on_change=auto_save, key="inp_dur")
-        st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only, on_change=auto_save, key="inp_max")
-
-        s1, s2, s3 = st.columns(3)
-        def_prep = st.session_state.exam_details.get('preparedBy')
-        if not def_prep: def_prep = st.session_state.user.get('name', 'Faculty')
-        st.session_state.exam_details['preparedBy'] = s1.text_input("Prepared By", value=def_prep, disabled=read_only, on_change=auto_save, key="inp_prep")
-        st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only, on_change=auto_save, key="inp_scr")
-        st.session_state.exam_details['approvedBy'] = s3.text_input("Approved By", value=st.session_state.exam_details.get('approvedBy', ''), disabled=read_only, on_change=auto_save, key="inp_app")
-
-    # --- 5. QUESTIONS EDITOR (CRASH FIX: ADDED INDICES TO KEYS) ---
-    st.markdown("#### Questions Editor")
-    
-    # We use enumerate(i) to make keys unique even if IDs are duplicates
-    for i, section in enumerate(st.session_state.sections):
-        with st.container():
-            st.markdown(f"**Block {i+1}**")
-            if section.get('isNote'):
-                c_del, c_txt = st.columns([1, 10])
-                # FIX: Added _{i} to the key
-                if not read_only and c_del.button("🗑️", key=f"dels_{section['id']}_{i}"): 
-                    st.session_state.sections.pop(i)
-                    auto_save()
-                    st.rerun()
-                # FIX: Added _{i} to the key
-                section['text'] = c_txt.text_input("Instruction", section['text'], key=f"n_{section['id']}_{i}", disabled=read_only, on_change=auto_save)
-            else:
-                h1, h2 = st.columns([10, 1])
-                # FIX: Added _{i} to the key
-                if not read_only and h2.button("🗑️", key=f"dels_{section['id']}_{i}"): 
-                    st.session_state.sections.pop(i)
-                    auto_save()
-                    st.rerun()
+        if not docs: st.info("📭 No approved question papers found yet.")
+        else:
+            docs.sort(key=lambda x: x.to_dict().get('exam_details', {}).get('courseCode', ''))
+            for doc in docs:
+                d = doc.to_dict()
+                det = d.get('exam_details', {})
+                sec_data = d.get('sections', [])
                 
-                for j, q in enumerate(section['questions']):
-                    c1, c2 = st.columns([1, 8])
-                    # FIX: Added _{i}_{j} to keys
-                    q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
-                    q['text'] = c2.text_area("Question", q['text'], height=70, key=f"qt_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
+                cycle_id = det.get('scheduleId')
+                cycle_end = schedule_end_dates.get(cycle_id)
+                today = datetime.date.today()
+                
+                is_admin = (st.session_state.user['role'] == 'admin')
+                is_cycle_over = (cycle_end and today > cycle_end)
+                show_sensitive_info = is_admin or is_cycle_over
+
+                label = f"{det.get('courseCode')} : {det.get('courseName')} ({det.get('examType')}) - {det.get('setType', 'Set ?')}"
+                
+                with st.expander(label):
+                    is_final = d.get('is_final_exam', False)
+                    if is_final:
+                        if show_sensitive_info: st.success("✅ **SELECTED FINAL EXAM** (Ready for Results)")
+                        else: st.info("🔒 Status: Approved (Selection Hidden until Exam Cycle Ends)")
+                    else: st.write(f"Status: Approved Backup ({det.get('setType')})")
+
+                    data_rows = []
+                    header_info = {
+                        "Exam Cycle": det.get('scheduleId', ''), "Academic Year": det.get('acadYear', ''),
+                        "Semester": det.get('semester', ''), "Department": det.get('department', ''),
+                        "Exam Type": det.get('examType', ''), "Course Code": det.get('courseCode', ''),
+                        "Course Name": det.get('courseName', ''), "Exam Date": det.get('examDate', '')
+                    }
+                    for sec in sec_data:
+                        if not sec.get('isNote'):
+                            for q in sec['questions']:
+                                try: m_val = float(q.get('marks', 0))
+                                except: m_val = 0
+                                if m_val > 0:
+                                    row = header_info.copy()
+                                    row.update({"Q.No": q.get('qNo'), "Question": q.get('text'), "Marks": m_val, "CO": q.get('co'), "Level": q.get('level')})
+                                    data_rows.append(row)
                     
-                    if q['text'].strip().upper() != 'OR':
-                        m1, m2, m3, m4 = st.columns([2,2,2,1])
-                        q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
-                        q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
-                        q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{q['id']}_{i}_{j}", disabled=read_only, on_change=auto_save)
-                        if not read_only and m4.button("❌", key=f"dq_{q['id']}_{i}_{j}"): 
-                            section['questions'].pop(j)
-                            auto_save()
-                            st.rerun()
-                
-                # FIX: Added _{i} to key
-                if not read_only and st.button("➕ Add Question", key=f"addq_{section['id']}_{i}"):
-                    # Use higher precision ID to prevent future duplicates
-                    new_q_id = int(time.time() * 1000000)
-                    section['questions'].append({'id': new_q_id, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'})
-                    auto_save()
-                    st.rerun()
+                    csv_analysis = pd.DataFrame(data_rows).to_csv(index=False).encode('utf-8') if data_rows else b""
+                    html_content = generate_html(det, sec_data)
+                    b64 = base64.b64encode(html_content.encode()).decode()
 
-    if not read_only:
-        st.divider()
-        b1, b2 = st.columns(2)
-        # Use higher precision ID to prevent future duplicates
-        if b1.button("➕ New Question Block"): 
-            new_id = int(time.time() * 1000000)
-            st.session_state.sections.append({'id': new_id, 'isNote': False, 'questions': [{'id': new_id+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]})
-            auto_save()
-            st.rerun()
-        if b2.button("➕ Add Instruction"): 
-            new_id = int(time.time() * 1000000)
-            st.session_state.sections.append({'id': new_id, 'isNote': True, 'text': 'Note: Answer any five questions'})
-            auto_save()
-            st.rerun()
-
-    # --- 6. ACTIONS ---
-    st.markdown("### Actions")
-    current_id = st.session_state.get('current_doc_id')
-    d = st.session_state.exam_details
-    
-    if not current_id and d['courseCode']:
-        safe_ay = str(d['acadYear']).replace(" ", "")
-        safe_set = str(d.get('setType', 'Set A')).replace(" ", "")
-        current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}_{safe_set}"
-        st.session_state.current_doc_id = current_id
-
-    c1, c2, c3 = st.columns(3)
-    if role in ['faculty', 'admin']:
-        if c1.button("💾 Force Save"):
-            if not d['courseCode']: st.error("Select a subject first.")
-            elif db:
-                auto_save()
-                st.success(f"Saved: {current_id}")
-
-        if c2.button("📤 Submit for Review", type="primary"):
-            if not current_id: st.error("Save Draft first")
-            elif db:
-                db.collection("exams").document(current_id).update({'status': 'SUBMITTED', 'exam_details.preparedBy': st.session_state.exam_details.get('preparedBy')})
-                st.session_state.current_doc_status = "SUBMITTED"
-                st.success("Submitted successfully!")
-
-    if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
-        comm = st.text_area("Scrutiny Comments")
-        if c1.button("Return for Revision") and db: db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
-        if c2.button("Approve & Forward", type="primary") and db: db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user.get('name', 'Scrutinizer')}); st.success("Approved"); st.rerun()
-
-    if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
-        if c3.button("✅ Final Publish", type="primary") and db: db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user.get('name', 'Approver')}); st.success("Published!"); st.rerun()
-
-    with st.expander("👁️ Live Preview"):
-        html = generate_html(st.session_state.exam_details, st.session_state.sections)
-        st.components.v1.html(html, height=800, scrolling=True)
-        
-    # --- 5. QUESTIONS EDITOR ---
-    st.markdown("#### Questions Editor")
-    for i, section in enumerate(st.session_state.sections):
-        with st.container():
-            st.markdown(f"**Block {i+1}**")
-            if section.get('isNote'):
-                c_del, c_txt = st.columns([1, 10])
-                if not read_only and c_del.button("🗑️", key=f"dels_{section['id']}"): 
-                    st.session_state.sections.pop(i)
-                    auto_save()
-                    st.rerun()
-                section['text'] = c_txt.text_input("Instruction", section['text'], key=f"n_{section['id']}", disabled=read_only, on_change=auto_save)
-            else:
-                h1, h2 = st.columns([10, 1])
-                if not read_only and h2.button("🗑️", key=f"dels_{section['id']}"): 
-                    st.session_state.sections.pop(i)
-                    auto_save()
-                    st.rerun()
-                
-                for j, q in enumerate(section['questions']):
-                    c1, c2 = st.columns([1, 8])
-                    q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}", disabled=read_only, on_change=auto_save)
-                    q['text'] = c2.text_area("Question", q['text'], height=70, key=f"qt_{q['id']}", disabled=read_only, on_change=auto_save)
+                    c1, c2, c3 = st.columns([1, 1, 1])
+                    with c1:
+                        href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}_{det.get("setType")}.html" style="text-decoration:none;"><button style="width:100%; padding:8px; border-radius:5px; border:1px solid #ccc;">📄 View Paper</button></a>'
+                        st.markdown(href, unsafe_allow_html=True)
+                    with c2:
+                        st.download_button("📊 Analysis CSV", csv_analysis, f"{det.get('courseCode')}_Data.csv", "text/csv", use_container_width=True)
                     
-                    if q['text'].strip().upper() != 'OR':
-                        m1, m2, m3, m4 = st.columns([2,2,2,1])
-                        q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{q['id']}", disabled=read_only, on_change=auto_save)
-                        q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}", disabled=read_only, on_change=auto_save)
-                        q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{q['id']}", disabled=read_only, on_change=auto_save)
-                        if not read_only and m4.button("❌", key=f"dq_{q['id']}"): 
-                            section['questions'].pop(j)
-                            auto_save()
-                            st.rerun()
-                
-                if not read_only and st.button("➕ Add Question", key=f"addq_{section['id']}"):
-                    section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'})
-                    auto_save()
-                    st.rerun()
+                    with c3:
+                        if is_final and show_sensitive_info:
+                            mark_cols = ['USN', 'Student Name']
+                            for sec in sec_data:
+                                if not sec.get('isNote'):
+                                    for q in sec['questions']:
+                                        try: m = int(q.get('marks',0))
+                                        except: m=0
+                                        if m > 0: mark_cols.append(f"Q{q.get('qNo')} ({m})")
+                            df_temp = pd.DataFrame(columns=mark_cols)
+                            csv_temp = df_temp.to_csv(index=False).encode('utf-8')
+                            st.download_button("📝 Marks Entry Template", csv_temp, f"{det.get('courseCode')}_MarksEntry.csv", "text/csv", use_container_width=True, type="primary")
+                        elif is_final and not show_sensitive_info: st.caption("🔒 Template unlocks after exam cycle.")
 
-    if not read_only:
-        st.divider()
-        b1, b2 = st.columns(2)
-        if b1.button("➕ New Question Block"): 
-            st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]})
-            auto_save()
-            st.rerun()
-        if b2.button("➕ Add Instruction"): 
-            st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'})
-            auto_save()
-            st.rerun()
-
-    # --- 6. ACTIONS (Generate ID for Auto-Save) ---
-    st.markdown("### Actions")
-    current_id = st.session_state.get('current_doc_id')
-    d = st.session_state.exam_details
-    
-    # Force generate ID if courseCode exists but ID is missing (enables first auto-save)
-    if not current_id and d['courseCode']:
-        safe_ay = str(d['acadYear']).replace(" ", "")
-        safe_set = str(d.get('setType', 'Set A')).replace(" ", "")
-        current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}_{safe_set}"
-        st.session_state.current_doc_id = current_id
-
-    c1, c2, c3 = st.columns(3)
-    if role in ['faculty', 'admin']:
-        if c1.button("💾 Force Save"):
-            if not d['courseCode']: st.error("Select a subject first.")
-            elif db:
-                auto_save()
-                st.success(f"Saved: {current_id}")
-
-        if c2.button("📤 Submit for Review", type="primary"):
-            if not current_id: st.error("Save Draft first")
-            elif db:
-                db.collection("exams").document(current_id).update({'status': 'SUBMITTED', 'exam_details.preparedBy': st.session_state.exam_details.get('preparedBy')})
-                st.session_state.current_doc_status = "SUBMITTED"
-                st.success("Submitted successfully!")
-
-    if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
-        comm = st.text_area("Scrutiny Comments")
-        if c1.button("Return for Revision") and db: db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
-        if c2.button("Approve & Forward", type="primary") and db: db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user.get('name', 'Scrutinizer')}); st.success("Approved"); st.rerun()
-
-    if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
-        if c3.button("✅ Final Publish", type="primary") and db: db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user.get('name', 'Approver')}); st.success("Published!"); st.rerun()
-
-    with st.expander("👁️ Live Preview"):
-        html = generate_html(st.session_state.exam_details, st.session_state.sections)
-        st.components.v1.html(html, height=800, scrolling=True)
-        
-    # --- QUESTIONS EDITOR (With Auto-Save) ---
-    st.markdown("#### Questions Editor")
-    for i, section in enumerate(st.session_state.sections):
-        with st.container():
-            st.markdown(f"**Block {i+1}**")
-            if section.get('isNote'):
-                c_del, c_txt = st.columns([1, 10])
-                # Delete triggers auto_save logic manually before rerun
-                if not read_only and c_del.button("🗑️", key=f"dels_{section['id']}"): 
-                    st.session_state.sections.pop(i)
-                    auto_save() 
-                    st.rerun()
-                
-                section['text'] = c_txt.text_input("Instruction", section['text'], key=f"n_{section['id']}", disabled=read_only, on_change=auto_save)
-            else:
-                h1, h2 = st.columns([10, 1])
-                if not read_only and h2.button("🗑️", key=f"dels_{section['id']}"): 
-                    st.session_state.sections.pop(i)
-                    auto_save()
-                    st.rerun()
-                
-                for j, q in enumerate(section['questions']):
-                    c1, c2 = st.columns([1, 8])
-                    q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}", disabled=read_only, on_change=auto_save)
-                    q['text'] = c2.text_area("Question", q['text'], height=70, key=f"qt_{q['id']}", disabled=read_only, on_change=auto_save)
-                    
-                    if q['text'].strip().upper() != 'OR':
-                        m1, m2, m3, m4 = st.columns([2,2,2,1])
-                        q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{q['id']}", disabled=read_only, on_change=auto_save)
-                        q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}", disabled=read_only, on_change=auto_save)
-                        q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{q['id']}", disabled=read_only, on_change=auto_save)
-                        if not read_only and m4.button("❌", key=f"dq_{q['id']}"): 
-                            section['questions'].pop(j)
-                            auto_save()
-                            st.rerun()
-                
-                if not read_only and st.button("➕ Add Question", key=f"addq_{section['id']}"):
-                    section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'})
-                    auto_save()
-                    st.rerun()
-
-    if not read_only:
-        st.divider()
-        b1, b2 = st.columns(2)
-        if b1.button("➕ New Question Block"): 
-            st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]})
-            auto_save()
-            st.rerun()
-        if b2.button("➕ Add Instruction"): 
-            st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'})
-            auto_save()
-            st.rerun()
-
-    # --- FOOTER ACTIONS ---
-    st.markdown("### Actions")
-    current_id = st.session_state.get('current_doc_id')
-    d = st.session_state.exam_details
-    
-    # Generate ID if missing (Essential for auto-save to work first time)
-    if not current_id and d['courseCode']:
-        safe_ay = str(d['acadYear']).replace(" ", "")
-        safe_set = str(d.get('setType', 'Set A')).replace(" ", "")
-        current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}_{safe_set}"
-        # Set it immediately so auto-save works
-        st.session_state.current_doc_id = current_id
-
-    c1, c2, c3 = st.columns(3)
-    if role in ['faculty', 'admin']:
-        if c1.button("💾 Force Save"):
-            if not d['courseCode']: st.error("Select a subject first.")
-            elif db:
-                auto_save()
-                st.success(f"Draft Saved: {current_id}")
-
-        if c2.button("📤 Submit for Review", type="primary"):
-            if not current_id: st.error("Save Draft first")
-            elif db:
-                db.collection("exams").document(current_id).update({'status': 'SUBMITTED', 'exam_details.preparedBy': st.session_state.exam_details.get('preparedBy')})
-                st.session_state.current_doc_status = "SUBMITTED"
-                st.success("Submitted successfully!")
-
-    # [Logic for Scrutinizer/Approver remains same as original...]
-    if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
-        comm = st.text_area("Scrutiny Comments")
-        if c1.button("Return for Revision") and db: db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
-        if c2.button("Approve & Forward", type="primary") and db: db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user.get('name', 'Scrutinizer')}); st.success("Approved"); st.rerun()
-
-    if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
-        if c3.button("✅ Final Publish", type="primary") and db: db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user.get('name', 'Approver')}); st.success("Published!"); st.rerun()
-
-    with st.expander("👁️ Live Preview"):
-        html = generate_html(st.session_state.exam_details, st.session_state.sections)
-        st.components.v1.html(html, height=800, scrolling=True)
 # === TAB 4: CALENDAR ===
 with t_cal:
     st.header("📅 Academic Schedule")
