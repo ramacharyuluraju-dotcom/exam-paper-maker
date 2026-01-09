@@ -1,753 +1,815 @@
 import streamlit as st
-import pandas as pd
 import firebase_admin
 from firebase_admin import credentials, firestore
+import hashlib
 import datetime
-import altair as alt
-import re
+import json
+import base64
+import pandas as pd
+import time
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
-# ==========================================
-# 1. SETUP & CONFIGURATION
-# ==========================================
+# --- 1. CONFIGURATION & CONSTANTS ---
+st.set_page_config(page_title="AMC Exam Portal Pro", layout="wide", page_icon="🎓")
 
-st.set_page_config(
-    page_title="VTU Attendance System", 
-    page_icon="🎓", 
-    layout="wide"
-)
+# Academic Constants
+BLOOMS_LEVELS = ["L1", "L2", "L3", "L4", "L5", "L6"]
+COS_LIST = ["CO1", "CO2", "CO3", "CO4", "CO5", "CO6"]
+DEPTS = ["CSE", "ECE", "MECH", "ISE", "CIVIL", "EEE", "MBA", "MCA", "Basic Science"]
 
-# Session State Initialization
-if 'auth_user' not in st.session_state:
-    st.session_state['auth_user'] = None
-if 'admin_search_usn' not in st.session_state:
-    st.session_state['admin_search_usn'] = ""
+# --- [THEME LOADING] ---
+def load_custom_css():
+    theme_color = "#fff7ed" 
+    st.markdown(f"""
+    <style>
+        .stApp {{ background-color: {theme_color}; color: #000000 !important; font-family: 'Inter', sans-serif; }}
+        section[data-testid="stSidebar"] {{ background-color: {theme_color}; border-right: 1px solid rgba(0,0,0,0.05); }}
+        div[data-testid="stExpander"], div[data-testid="stForm"] {{
+            background: #ffffff; border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); border: 1px solid #cbd5e1;
+            padding: 20px; margin-bottom: 1rem;
+        }}
+        input, textarea, select {{ background-color: #ffffff !important; color: #000000 !important; border: 1px solid #cbd5e1; font-weight: 600 !important; }}
+        button[kind="primary"] {{ background-color: #2563eb !important; color: white !important; border: none; }}
+        .badge {{ padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 12px; }}
+        .badge-draft {{ background: #e2e8f0; color: #334155; }}
+        .badge-submitted {{ background: #dbeafe; color: #1e40af; }}
+        .badge-scrutinized {{ background: #ffedd5; color: #9a3412; }}
+        .badge-approved {{ background: #dcfce7; color: #166534; }}
+        .badge-revision {{ background: #fee2e2; color: #991b1b; }}
+    </style>
+    """, unsafe_allow_html=True)
 
-# Initialize Firebase
-if not firebase_admin._apps:
-    try:
-        if "firebase" in st.secrets:
-            key_dict = dict(st.secrets["firebase"])
-            cred = credentials.Certificate(key_dict)
-        else:
-            cred = credentials.Certificate("firebase_key.json")
-        firebase_admin.initialize_app(cred)
-    except Exception as e:
-        st.error(f"Firebase Init Error: {e}")
+load_custom_css()  
 
-db = firestore.client()
-
-# ==========================================
-# 2. CACHING & OPTIMIZATION
-# ==========================================
-
-@st.cache_data(ttl=60) 
-def get_students_cached(dept, sem, section):
-    c_dept = str(dept).strip().upper()
-    c_sem = str(sem).strip()
-    c_sec = str(section).strip().upper()
-    
-    try:
-        docs = db.collection('Students')\
-            .where("dept", "==", c_dept)\
-            .where("sem", "==", c_sem)\
-            .where("section", "==", c_sec).stream()
-        return [{"usn": d.id, **d.to_dict()} for d in docs]
-    except Exception:
-        return []
-
-@st.cache_data(ttl=10) 
-def get_faculty_courses(faculty_id):
-    try:
-        docs = db.collection('Courses').where("faculty_id", "==", faculty_id).stream()
-        return [d.to_dict() for d in docs]
-    except Exception:
-        return []
-
-# ==========================================
-# 3. DATA HELPERS
-# ==========================================
-
-def sanitize_key(val):
-    if not val: return ""
-    return str(val).strip().upper().replace(".", "_").replace("/", "_").replace(" ", "")
-
-def generate_email(name, existing_email=None):
-    val = str(existing_email).strip().lower()
-    if val and val not in ['nan', 'none', '']:
-        return val
-    clean_name = re.sub(r'[^a-zA-Z0-9]', '.', str(name).strip().lower())
-    clean_name = re.sub(r'\.+', '.', clean_name).strip('.')
-    return f"{clean_name}@amc.edu"
-
-# ==========================================
-# 4. REPORT GENERATORS
-# ==========================================
-
-def generate_session_report(dept, start_date, end_date):
-    """Class Log Report"""
-    try:
-        all_courses = db.collection('Courses').where("dept", "==", dept).stream()
-        course_lookup = {}
-        for c in all_courses:
-            d = c.to_dict()
-            course_lookup[d.get('subcode', 'UNKNOWN')] = {
-                'sem': d.get('sem', 'N/A'), 
-                'title': d.get('subtitle', '')
-            }
-
-        sessions = db.collection('Class_Sessions')\
-            .where("date", ">=", str(start_date))\
-            .where("date", "<=", str(end_date))\
-            .stream()
-            
-        data = []
-        for s in sessions:
-            d = s.to_dict()
-            subcode = d.get('course_code', '')
-            
-            if subcode in course_lookup:
-                info = course_lookup[subcode]
-                data.append({
-                    "Date": d.get('date'),
-                    "Period": d.get('period', 'N/A'),
-                    "Dept": dept,
-                    "Sem": info['sem'],
-                    "Section": d.get('section'),
-                    "Subject Code": subcode,
-                    "Subject Title": info['title'],
-                    "Faculty Name": d.get('faculty_name'),
-                    "Absentees Count": len(d.get('absentees', [])),
-                    "Absent USNs": ", ".join(d.get('absentees', []))
-                })
-        return pd.DataFrame(data)
-    except Exception as e:
-        return pd.DataFrame()
-
-def generate_student_summary_report(dept, sem, section):
-    """Generates a Consolidated Student-wise Report (Pivot Table)"""
-    try:
-        students = get_students_cached(dept, sem, section)
-        if not students: return pd.DataFrame()
-        
-        raw_data = []
-        all_subjects = set()
-        
-        for s in students:
-            usn = s['usn']
-            name = s.get('name', 'Unknown')
-            
-            doc = db.collection('Student_Summaries').document(usn).get()
-            structured = {}
-            
-            if doc.exists:
-                data = doc.to_dict()
-                for k, v in data.items():
-                    if "." in k:
-                        try:
-                            code, field = k.split('.')[0], k.split('.')[1]
-                            if code not in structured: structured[code] = {}
-                            structured[code][field] = v
-                        except: pass
-            
-            student_row = {
-                "AY": s.get('ay', '2025_26'),
-                "Dept": dept,
-                "Sem": sem, 
-                "Section": section,
-                "USN": usn, 
-                "Name": name
-            }
-            
-            if not structured:
-                try:
-                    courses = db.collection('Courses').where("dept", "==", dept)\
-                        .where("sem", "==", sem).where("section", "==", section).stream()
-                    for c in courses:
-                        sc = sanitize_key(c.to_dict().get('subcode'))
-                        if sc:
-                            student_row[sc] = 0.0
-                            all_subjects.add(sc)
-                except: pass
+# --- 2. FIREBASE SETUP ---
+db = None
+def init_firebase():
+    global db
+    if not firebase_admin._apps:
+        try:
+            if "firestore" in st.secrets:
+                key_dict = dict(st.secrets["firestore"])
+                cred = credentials.Certificate(key_dict)
+                firebase_admin.initialize_app(cred)
+                db = firestore.client()
+                return True
             else:
-                for code, stats in structured.items():
-                    tot = stats.get('total', 0)
-                    att = stats.get('attended', 0)
-                    pct = 100.0 if tot == 0 else round((att / tot * 100), 1)
-                    student_row[code] = pct
-                    all_subjects.add(code)
-            
-            raw_data.append(student_row)
+                st.error("⚠️ secrets.toml missing [firestore] section.")
+                return False
+        except Exception as e:
+            st.error(f"🔥 Firebase Initialization Error: {e}")
+            return False
+    else:
+        db = firestore.client()
+        return True
 
-        if raw_data:
-            df = pd.DataFrame(raw_data)
-            base_cols = ["AY", "Dept", "Sem", "Section", "USN", "Name"]
-            subj_cols = sorted(list(all_subjects))
-            
-            for sc in subj_cols:
-                if sc not in df.columns: df[sc] = 0.0
-                
-            final_cols = [c for c in base_cols if c in df.columns] + subj_cols
-            return df[final_cols].sort_values(by="USN").fillna(0)
-            
-        return pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+firebase_ready = init_firebase()
 
-# ==========================================
-# 5. CSV PROCESSORS
-# ==========================================
+# --- 3. HELPER FUNCTIONS ---
+def hash_password(password):
+    return hashlib.sha256(str.encode(str(password))).hexdigest()
 
-def process_courses_csv(df):
-    df.columns = [str(c).strip().lower().replace(" ", "").replace("_", "") for c in df.columns]
-    rename_map = {'email':'facultyemail','mail':'facultyemail','sub':'subcode','code':'subcode','faculty':'facultyname','fac':'facultyname','sec':'section','semester':'sem'}
-    df = df.rename(columns=rename_map).fillna("")
-    
-    if 'subcode' not in df.columns: return 0, ["❌ Error: Missing SubCode"]
+def get_key_from_password(password, salt_type='new'):
+    salt = b'static_salt_for_amc_exam_app' if salt_type == 'new' else b'static_salt_for_exam_app'
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=100000)
+    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
-    batch = db.batch(); count = 0; logs = []
-    for _, row in df.iterrows():
-        raw_code = row.get('subcode', '')
-        if not raw_code: continue
-        subcode = sanitize_key(raw_code)
-        ay = str(row.get('ay', '2025_26')).strip()
-        dept = str(row.get('dept', 'ECE')).upper().strip()
-        sem = str(row.get('sem', '3')).strip()
-        section = str(row.get('section', 'A')).upper().strip()
-        fname = str(row.get('facultyname', 'Faculty')).strip()
-        femail = generate_email(fname, row.get('facultyemail', ''))
-        
-        cid = f"{ay}_{dept}_{sem}_{section}_{subcode}"
-        
-        batch.set(db.collection('Courses').document(cid), {
-            "ay": ay, "dept": dept, "sem": sem, "section": section,
-            "subcode": subcode, "subtitle": str(row.get('subtitle', subcode)),
-            "faculty_id": femail, "faculty_name": fname
-        })
-        
-        batch.set(db.collection('Users').document(femail), {
-            "name": fname, "role": "Faculty", "dept": dept, "password": "password123"
-        }, merge=True)
-        
-        logs.append(f"Linked {subcode} -> {femail}")
-        count += 1
-        if count % 200 == 0: batch.commit(); batch = db.batch()
-    batch.commit()
-    return count, logs
-
-def process_students_csv(df):
-    df.columns = [str(c).strip().lower().replace(" ", "").replace("_", "") for c in df.columns]
-    df = df.rename(columns={'sec': 'section', 'semester': 'sem', 'academic': 'ay'}).fillna("")
-    if 'usn' not in df.columns: return 0
-    
-    batch = db.batch(); count = 0
-    course_map = {}
+def login_user(username, password):
+    if not db: return None
     try:
-        for c in db.collection('Courses').stream():
-            d = c.to_dict()
-            k = f"{d.get('dept')}_{d.get('sem')}_{d.get('section')}"
-            if k not in course_map: course_map[k] = []
-            course_map[k].append(d)
-    except: pass
-        
-    for _, row in df.iterrows():
-        raw_usn = row.get('usn', '')
-        if not raw_usn: continue
-        usn = sanitize_key(raw_usn)
-        dept = str(row.get('dept', 'ECE')).upper().strip()
-        sem = str(row.get('sem', '3')).strip()
-        sec = str(row.get('section', 'A')).upper().strip()
-        ay = str(row.get('ay', '2025_26')).strip()
-        
-        batch.set(db.collection('Students').document(usn), {
-            "name": row.get('name', 'Student'),
-            "dept": dept, "sem": sem, "section": sec, "ay": ay, "batch": str(row.get('batch', ''))
-        })
-        
-        k = f"{dept}_{sem}_{sec}"
-        if k in course_map:
-            updates = {}
-            for subj in course_map[k]:
-                code = sanitize_key(subj.get('subcode'))
-                if code:
-                    updates[f"{code}.title"] = subj.get('subtitle', code)
-                    updates[f"{code}.total"] = firestore.Increment(0)
-                    updates[f"{code}.attended"] = firestore.Increment(0)
-            if updates: 
-                batch.set(db.collection('Student_Summaries').document(usn), updates, merge=True)
-        
-        count += 1
-        if count % 200 == 0: batch.commit(); batch = db.batch()
-    batch.commit()
-    return count
+        doc = db.collection("users").document(username).get()
+        if doc.exists:
+            u = doc.to_dict()
+            if u.get('password') == hash_password(password): return u
+    except Exception: pass
+    return None
 
-def process_faculty_csv(df):
-    """Processes bulk faculty upload"""
-    df.columns = [str(c).strip().lower().replace(" ", "_") for c in df.columns]
+def generate_html(details, sections):
+    header_title = f"{details.get('examType', 'Exam')} - {details.get('semester', '')} Semester"
+    if details.get('setType'): header_title += f" ({details.get('setType')})"
     
-    required = ['name', 'email', 'dept']
-    if not all(col in df.columns for col in required):
-        return 0, "❌ Error: CSV must have 'name', 'email', and 'dept' columns."
-    
-    batch = db.batch()
-    count = 0
-    
-    for _, row in df.iterrows():
-        email = str(row['email']).strip().lower()
-        if not email or "@" not in email: continue
-        
-        data = {
-            "name": str(row['name']).strip(),
-            "role": "Faculty",
-            "dept": str(row['dept']).strip().upper(),
-            "password": str(row.get('password', 'password123')).strip() 
-        }
-        
-        batch.set(db.collection('Users').document(email), data, merge=True)
-        count += 1
-        
-        if count % 400 == 0: 
-            batch.commit()
-            batch = db.batch()
-            
-    batch.commit()
-    return count, "Success"
-
-def admin_force_sync():
-    students = db.collection('Students').stream()
-    courses = list(db.collection('Courses').stream())
-    course_map = {}
-    for c in courses:
-        d = c.to_dict()
-        k = f"{str(d.get('dept')).strip().upper()}_{str(d.get('sem')).strip()}_{str(d.get('section')).strip().upper()}"
-        if k not in course_map: course_map[k] = []
-        course_map[k].append(d)
-    
-    batch = db.batch(); count = 0; updated = 0
-    for s in students:
-        s_data = s.to_dict(); usn = s.id
-        k = f"{str(s_data.get('dept','')).strip().upper()}_{str(s_data.get('sem','')).strip()}_{str(s_data.get('section','')).strip().upper()}"
-        if k in course_map:
-            updates = {}
-            for c in course_map[k]:
-                code = sanitize_key(c.get('subcode'))
-                if code:
-                    updates[f"{code}.title"] = c.get('subtitle', code)
-                    updates[f"{code}.total"] = firestore.Increment(0)
-                    updates[f"{code}.attended"] = firestore.Increment(0)
-            if updates:
-                batch.set(db.collection('Student_Summaries').document(usn), updates, merge=True)
-                updated += 1
-        count += 1
-        if count % 200 == 0: batch.commit(); batch = db.batch()
-    batch.commit()
-    return updated
-
-# ==========================================
-# 6. DASHBOARDS
-# ==========================================
-
-def render_report_tab(prefix=""):
-    st.subheader("1. 🎓 Consolidated Detention/Attendance Report")
-    
-    # IMPROVEMENT: Use Form to prevent reruns on dropdown select
-    with st.form(key=f'{prefix}report_form'):
-        c1, c2, c3 = st.columns(3)
-        # Type-able Dept/Sec to handle new sections/depts dynamically
-        s_dept = c1.selectbox(
-            "Department", 
-            ["ECE", "CSE", "ISE", "AIML", "MECH", "CIVIL", "EEE", "BS", "MBA", "MCA"], 
-            index=0, 
-            key=f'{prefix}rep_dept'
-        )
-        s_sem = c2.selectbox("Semester", ["1", "2", "3", "4", "5", "6", "7", "8"], index=2, key=f'{prefix}rep_sem')
-        s_sec = c3.text_input("Section (Type letter)", value="A", key=f'{prefix}rep_sec').strip().upper()
-        
-        submit_cons = st.form_submit_button("🚀 Generate Consolidated Report")
-
-    if submit_cons:
-        with st.spinner("Processing..."):
-            df = generate_student_summary_report(s_dept, s_sem, s_sec)
-        
-        if not df.empty:
-            st.toast(f"Report Generated: {len(df)} students", icon="✅")
-            st.dataframe(df)
-            st.download_button("⬇️ Download CSV", df.to_csv(index=False).encode('utf-8'), "Consolidated_Attendance.csv", key=f'{prefix}dl_cons')
+    usn_boxes = "".join(['<div class="box"></div>' for _ in range(10)])
+    rows = ""
+    for sec in sections:
+        if sec.get('isNote'):
+            rows += f"<tr><td colspan='5' style='background:#f9f9f9; font-weight:bold; font-style:italic; padding:8px;'>{sec['text']}</td></tr>"
         else:
-            st.warning("No data found for this class.")
+            for q in sec['questions']:
+                if q['text'].strip().upper() == 'OR':
+                    rows += "<tr><td colspan='5' style='text-align:center; font-weight:bold; background:#eee;'>OR</td></tr>"
+                else:
+                    txt = q['text'].replace('\n', '<br>')
+                    rows += f"""<tr><td style='text-align:center;'><b>{q['qNo']}</b></td><td>{txt}</td>
+                    <td style='text-align:center;'>{int(q['marks']) if q['marks'] > 0 else ''}</td>
+                    <td style='text-align:center;'>{q['co']}</td><td style='text-align:center;'>{q['level']}</td></tr>"""
 
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <script>window.MathJax = {{ tex: {{ inlineMath: [['$', '$'], ['\\\\(', '\\\\)']] }}, svg: {{ fontCache: 'global' }} }};</script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <style>
+        body {{ font-family: 'Times New Roman', serif; padding: 20px; color: #000; }}
+        .paper {{ width: 210mm; margin: 0 auto; background: white; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }}
+        td, th {{ border: 1px solid black; padding: 6px; }}
+        .header {{ text-align: center; margin-bottom: 20px; border-bottom: 2px solid black; padding-bottom: 10px; }}
+        .inst {{ font-size: 24px; font-weight: bold; text-transform: uppercase; font-family: Arial, sans-serif; }}
+        .meta {{ display: flex; justify-content: space-between; font-size: 14px; margin: 5px 0; }}
+        .box {{ width: 25px; height: 25px; border: 1px solid black; display: inline-block; margin-right: -1px; }}
+        .sig-block {{ display: flex; justify-content: space-between; margin-top: 50px; text-align: center; font-size: 12px; }}
+        .sig-line {{ border-top: 1px solid black; width: 150px; padding-top: 5px; font-weight: bold; }}
+        @media print {{ body {{ padding: 0; }} .paper {{ box-shadow: none; margin: 0; width: 100%; }} }}
+    </style>
+    </head>
+    <body>
+        <div class="paper">
+            <div class="header">
+                <div class="inst">{details.get('instituteName')}</div>
+                <div style="font-size:12px; font-weight:bold;">{details.get('subHeader')}</div>
+                <div style="font-size:12px; font-weight:bold;">{details.get('department')}</div>
+                <div style="font-size:10px; font-style:italic;">{details.get('accreditation')}</div>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                <span style="font-weight:bold; font-size:16px;">USN</span>
+                <div style="display:flex;">{usn_boxes}</div>
+            </div>
+            <div style="text-align:center; font-weight:bold; font-size:16px; text-decoration:underline; margin-bottom:10px;">
+                {header_title} - {details.get('acadYear', '')}
+            </div>
+            <div class="meta">
+                <span><b>Course:</b> {details.get('courseName')}</span>
+                <span><b>Code:</b> {details.get('courseCode')}</span>
+            </div>
+             <div class="meta">
+                <span><b>Date:</b> {details.get('examDate')}</span>
+                <span><b>Duration:</b> {details.get('duration')}</span>
+                <span><b>Max Marks:</b> {details.get('maxMarks')}</span>
+            </div>
+            <table>
+                <thead><tr style="background:#f0f0f0;"><th width="8%">Q.No</th><th width="62%">Question</th><th width="10%">Marks</th><th width="10%">CO</th><th width="10%">Level</th></tr></thead>
+                <tbody>{rows}</tbody>
+            </table>
+            <div class="sig-block">
+                <div><div class="sig-line">{details.get('preparedBy','')}<br>Prepared By</div></div>
+                <div><div class="sig-line">{details.get('scrutinizedBy','')}<br>Scrutinized By</div></div>
+                <div><div class="sig-line">{details.get('approvedBy','')}<br>Approved By</div></div>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+
+# --- 5. STATE MANAGEMENT ---
+if 'user' not in st.session_state: st.session_state.user = None
+
+def init_exam_data():
+    return {
+        'instituteName': 'AMC ENGINEERING COLLEGE', 'subHeader': '(AUTONOMOUS)',
+        'accreditation': 'NAAC A+ | NBA Accredited', 'department': '',
+        'acadYear': '2024-2025', 'semester': '', 'examType': '', 'examDate': '',
+        'courseName': '', 'courseCode': '', 'maxMarks': 50, 'duration': '90 Mins',
+        'preparedBy': '', 'scrutinizedBy': '', 'approvedBy': '', 'scheduleId': '',
+        'setType': 'Set A' 
+    }
+
+if 'exam_details' not in st.session_state:
+    st.session_state.exam_details = init_exam_data()
+if 'sections' not in st.session_state:
+    st.session_state.sections = [{'id': 1, 'isNote': False, 'questions': [{'id': 101, 'qNo': '1.a', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}]}]
+if 'current_doc_id' not in st.session_state: st.session_state.current_doc_id = None
+if 'current_doc_status' not in st.session_state: st.session_state.current_doc_status = "NEW"
+
+# --- 6. LOGIN SCREEN ---
+if not st.session_state.user:
+    lc1, lc2, lc3 = st.columns([1, 1.5, 1]) 
+    with lc2:
+        with st.container():
+            st.markdown("<h1 style='text-align:center;'>🎓 AMC Exam Portal</h1><hr>", unsafe_allow_html=True)
+            u = st.text_input("Username", placeholder="e.g. FAC001")
+            p = st.text_input("Password", type="password")
+            if st.button("Secure Login", type="primary", use_container_width=True, disabled=not firebase_ready):
+                user = login_user(u, p)
+                if user:
+                    st.session_state.user = user
+                    st.session_state.user['id'] = u
+                    st.rerun()
+                else:
+                    st.error("Invalid Credentials")
+    st.stop()
+
+# --- 7. SIDEBAR ---
+with st.sidebar:
+    role = st.session_state.user.get('role', 'User').lower()
+    user_name = st.session_state.user.get('name', 'Faculty')
+    
+    st.markdown(f"""
+    <div style='text-align: center; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 10px; margin-bottom: 20px;'>
+        <div style='font-size: 40px;'>👤</div>
+        <div style='font-weight: bold;'>{user_name}</div>
+        <div style='color: #64748b; font-size: 12px; text-transform: uppercase;'>{role}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.button("🚪 Log Out", use_container_width=True): st.session_state.clear(); st.rerun()
     st.divider()
-    st.subheader("2. 📝 Class Log (Audit)")
-    
-    with st.form(key=f'{prefix}log_form'):
-        c1, c2 = st.columns(2)
-        l_start = c1.date_input("From Date", datetime.date.today().replace(day=1), key=f'{prefix}rep_start_date')
-        l_end = c2.date_input("To Date", datetime.date.today(), key=f'{prefix}rep_end_date')
+
+    if role == 'admin':
+        st.header("⚙️ Admin")
         
-        submit_logs = st.form_submit_button("🚀 Generate Class Logs")
+        # --- VIEW SCHEDULES ---
+        with st.expander("📋 Active Schedules", expanded=True):
+            if db:
+                try:
+                    if 'cycles_cache' not in st.session_state or st.button("🔄 Refresh List"):
+                        st.session_state.cycles_cache = list(db.collection("exam_schedule").stream())
 
-    if submit_logs:
-        df = generate_session_report(s_dept, l_start, l_end)
-        if not df.empty:
-            st.dataframe(df)
-            st.download_button("⬇️ Logs CSV", df.to_csv(index=False).encode('utf-8'), "class_logs.csv", key=f'{prefix}dl_logs')
-        else:
-            st.warning("No classes found.")
+                    schedules_found = False
+                    for s in st.session_state.cycles_cache:
+                        schedules_found = True
+                        sd = s.to_dict()
+                        st.markdown(f"**{sd.get('cycle_id')}**")
+                        st.caption(f"{sd.get('submission_start')} ➔ {sd.get('submission_end')}")
+                        st.text(f"Subjects: {len(sd.get('subjects', []))}")
+                        if st.button("🗑️", key=f"del_{s.id}"):
+                            db.collection("exam_schedule").document(s.id).delete()
+                            del st.session_state.cycles_cache 
+                            st.rerun()
+                        st.divider()
+                        
+                    if not schedules_found: st.caption("No active cycles.")
+                except Exception as e: st.error(f"DB Error: {e}")
 
-def faculty_dashboard(user):
-    st.title(f"👨‍🏫 {user['name']}")
+        # --- UPLOAD SCHEDULES ---
+        with st.expander("📅 Upload New Schedule"):
+            st.info("Upload Time Table CSV.")
+            with st.form("cycle_form"):
+                cy_id = st.text_input("Cycle ID", placeholder="e.g. IA1_JAN2025")
+                c1, c2 = st.columns(2)
+                d_start = c1.date_input("Start")
+                d_end = c2.date_input("End")
+                up_csv = st.file_uploader("CSV File", type=['csv'])
+                
+                submitted = st.form_submit_button("🚀 Upload & Verify")
+                
+                if submitted:
+                    if not db: st.error("No DB Connection")
+                    elif not cy_id or not up_csv: st.error("Fill all fields")
+                    else:
+                        try:
+                            df = pd.read_csv(up_csv)
+                            df.columns = df.columns.str.strip().str.replace(r'[./]', '_', regex=True)
+                            df = df.astype(str)
+                            subjects_data = df.to_dict(orient='records')
+                            
+                            doc_data = {
+                                'cycle_id': cy_id,
+                                'submission_start': str(d_start),
+                                'submission_end': str(d_end),
+                                'subjects': subjects_data,
+                                'created_at': str(datetime.datetime.now())
+                            }
+                            db.collection("exam_schedule").document(cy_id).set(doc_data)
+                            if 'cycles_cache' in st.session_state: del st.session_state.cycles_cache
+                            st.success(f"✅ Success! Uploaded {len(subjects_data)} subjects.")
+                            time.sleep(1)
+                            st.rerun()
+                        except Exception as e: st.error(f"❌ Error: {e}")
+
+        # --- ADD USER (MANUAL & BULK CSV) ---
+        with st.expander("Add User / Bulk Upload"):
+            ut1, ut2 = st.tabs(["👤 Manual", "📂 Bulk CSV"])
+            
+            # TAB 1: MANUAL
+            with ut1:
+                with st.form("new_u_form"):
+                    nu = st.text_input("User ID")
+                    nn = st.text_input("Full Name")
+                    np = st.text_input("Password", type="password")
+                    nr = st.selectbox("Role", ["faculty", "scrutinizer", "approver", "admin"])
+                    nd = st.selectbox("Dept", DEPTS)
+                    if st.form_submit_button("Create") and db:
+                        db.collection("users").document(nu).set({'name':nn, 'password':hash_password(np), 'role':nr, 'department':nd})
+                        st.success("User Added!")
+            
+            # TAB 2: BULK UPLOAD
+            with ut2:
+                st.info("Required Columns: `id`, `name`, `password`, `role`, `department`")
+                u_csv = st.file_uploader("Upload Users CSV", type=['csv'])
+                if u_csv:
+                    if st.button("🚀 Process Bulk Upload"):
+                        if not db: st.error("No DB Connection")
+                        else:
+                            try:
+                                df_u = pd.read_csv(u_csv)
+                                # Normalize column names to lowercase/strip
+                                df_u.columns = df_u.columns.str.strip().str.lower()
+                                required = {'id', 'name', 'password', 'role', 'department'}
+                                
+                                if not required.issubset(df_u.columns):
+                                    st.error(f"Missing columns! Found: {list(df_u.columns)}")
+                                else:
+                                    count = 0
+                                    progress = st.progress(0)
+                                    total = len(df_u)
+                                    
+                                    batch = db.batch()
+                                    for idx, row in df_u.iterrows():
+                                        uid = str(row['id']).strip()
+                                        u_data = {
+                                            'name': str(row['name']),
+                                            'password': hash_password(str(row['password'])),
+                                            'role': str(row['role']).lower(),
+                                            'department': str(row['department'])
+                                        }
+                                        ref = db.collection("users").document(uid)
+                                        batch.set(ref, u_data)
+                                        
+                                        # Commit every 400 writes (Firestore batch limit is 500)
+                                        if (idx + 1) % 400 == 0:
+                                            batch.commit()
+                                            batch = db.batch()
+                                            
+                                        count += 1
+                                        progress.progress(count / total)
+                                    
+                                    batch.commit() # Commit remaining
+                                    st.success(f"✅ Successfully added {count} users!")
+                                    time.sleep(1); st.rerun()
+                            except Exception as e: st.error(f"Error: {e}")
+
+# --- 8. DASHBOARD TABS ---
+t_inbox, t_edit, t_lib, t_cal, t_bak = st.tabs(["📥 Inbox", "📝 Editor", "📚 Library", "📅 Calendar", "💾 Backup"])
+
+# === TAB 1: INBOX & DASHBOARD ===
+with t_inbox:
+    view_mode = "List"
     
-    tab_attendance, tab_history, tab_reports = st.tabs(["📝 Attendance", "📜 History", "📊 Reports"])
-    
-    my_courses = get_faculty_courses(user['id'])
-    
-    with tab_attendance:
-        if not my_courses:
-            st.warning("No courses assigned.")
+    if role == 'admin':
+        c_mode, c_refresh = st.columns([6, 1])
+        with c_mode:
+            view_mode = st.radio("View Mode", ["📂 Inbox (Tasks)", "📊 Status Dashboard", "🔐 QP Selection (COE)"], horizontal=True, label_visibility="collapsed")
+        with c_refresh:
+            if st.button("🔄"): 
+                if 'inbox_cache' in st.session_state: del st.session_state.inbox_cache
+                if 'cycles_cache' in st.session_state: del st.session_state.cycles_cache
+                st.rerun()
+
+    if role == 'admin' and view_mode == "📊 Status Dashboard":
+        st.markdown("### 📊 Exam Cycle Compliance")
+        
+        if 'cycles_cache' not in st.session_state and db:
+             st.session_state.cycles_cache = list(db.collection("exam_schedule").stream())
+        
+        cycles = [d.id for d in st.session_state.get('cycles_cache', [])]
+        
+        if not cycles:
+            st.warning("No exam schedules found. Upload a schedule in the Sidebar first.")
         else:
-            c_map = {f"{c.get('subcode','?')} ({c.get('section','?')})" : c for c in my_courses}
-            sel_name = st.selectbox("Select Class", list(c_map.keys()), key='fac_sel_class')
-            course = c_map[sel_name]
+            sel_cycle = st.selectbox("Select Exam Cycle", cycles)
+            if sel_cycle and db:
+                sch_doc = db.collection("exam_schedule").document(sel_cycle).get()
+                expected_subjects = sch_doc.to_dict().get('subjects', [])
+                submitted_docs = list(db.collection("exams").where("exam_details.scheduleId", "==", sel_cycle).stream())
+                
+                total_count = len(expected_subjects)
+                submitted_map = {} 
+                for d in submitted_docs:
+                    data = d.to_dict()
+                    code = data['exam_details'].get('courseCode')
+                    status = data.get('status', 'NEW')
+                    submitted_map[code] = status
+
+                pending_list = []
+                completed_list = []
+                for sub in expected_subjects:
+                    code = sub.get('SubCode'); name = sub.get('SubName'); dept = sub.get('Branch', 'Common')
+                    status = submitted_map.get(code, "PENDING")
+                    item = {"Code": code, "Name": name, "Dept": dept, "Status": status}
+                    if status == "PENDING" or status == "NEW": pending_list.append(item)
+                    else: completed_list.append(item)
+
+                sub_count = len(completed_list)
+                progress = sub_count / total_count if total_count > 0 else 0
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Subjects", total_count); m2.metric("Received", sub_count); m3.metric("Pending", len(pending_list), delta_color="inverse")
+                st.progress(progress)
+                
+                c_pen, c_comp = st.columns(2)
+                with c_pen:
+                    st.error(f"❌ Pending ({len(pending_list)})")
+                    if pending_list: st.dataframe(pd.DataFrame(pending_list)[['Code', 'Name', 'Dept']], hide_index=True, use_container_width=True)
+                with c_comp:
+                    st.success(f"✅ Submitted ({len(completed_list)})")
+                    if completed_list: st.dataframe(pd.DataFrame(completed_list), hide_index=True, use_container_width=True)
+
+    elif role == 'admin' and view_mode == "🔐 QP Selection (COE)":
+        st.markdown("### 🔐 Final Exam Selection (Lottery)")
+        st.info("Select the final paper to be printed. This determines the columns for the IA Marks Entry CSV.")
+        
+        if db:
+            docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
+            grouped = {}
+            for d in docs:
+                data = d.to_dict()
+                code = data['exam_details'].get('courseCode', 'Unknown')
+                if code not in grouped: grouped[code] = []
+                grouped[code].append(d)
             
-            st.caption(f"Marking: {course.get('subtitle','')} | {course.get('dept','')} {course.get('sem','')}-{course.get('section','')}")
+            if not grouped: st.warning("No approved papers ready for selection.")
             
-            c_date, c_period = st.columns(2)
-            date_val = c_date.date_input("Date", datetime.date.today(), key='mark_date')
-            period_val = c_period.selectbox("Period", ["1", "2", "3", "4", "5", "6", "7", "Lab"], key='mark_period')
+            for code, papers in grouped.items():
+                sub_name = papers[0].to_dict()['exam_details'].get('courseName', '')
+                with st.expander(f"📦 {code} - {sub_name} ({len(papers)} Sets)"):
+                    cols = st.columns(len(papers))
+                    for i, doc in enumerate(papers):
+                        d = doc.to_dict()
+                        det = d['exam_details']
+                        is_final = d.get('is_final_exam', False)
+                        
+                        border = "2px solid #22c55e" if is_final else "1px solid #e2e8f0"
+                        bg = "#f0fdf4" if is_final else "#ffffff"
+                        
+                        with cols[i]:
+                            st.markdown(f"""
+                            <div style="border:{border}; background:{bg}; padding:10px; border-radius:8px; text-align:center;">
+                                <h4>{det.get('setType', 'Set ?')}</h4>
+                                <div style="font-size:12px;">Prepared By: {det.get('preparedBy')}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            if is_final: st.success("✅ SELECTED")
+                            else:
+                                if st.button(f"🔒 Select {det.get('setType')}", key=f"sel_{doc.id}"):
+                                    for other_doc in papers: db.collection("exams").document(other_doc.id).update({'is_final_exam': False})
+                                    db.collection("exams").document(doc.id).update({'is_final_exam': True})
+                                    st.rerun()
+
+    else:
+        st.markdown(f"### 📥 {role.capitalize()} Inbox")
+        filter_dept = "All"
+        if role in ['admin', 'approver', 'scrutinizer']:
+            col_fil1, col_fil2 = st.columns([1, 4])
+            with col_fil1: filter_dept = st.selectbox("🏢 Branch/Department", ["All"] + DEPTS)
+        
+        if 'inbox_cache' not in st.session_state:
+            docs = []
+            if db:
+                ref = db.collection("exams")
+                if role == 'faculty': docs = list(ref.where("author_id", "==", st.session_state.user['id']).stream())
+                elif role == 'scrutinizer': docs = list(ref.where("status", "==", "SUBMITTED").stream())
+                elif role == 'approver': docs = list(ref.where("status", "==", "SCRUTINIZED").stream())
+                elif role == 'admin': docs = list(ref.stream())
+            st.session_state.inbox_cache = docs
+
+        if 'inbox_cache' in st.session_state:
+            filtered_docs = []
+            for doc in st.session_state.inbox_cache:
+                d = doc.to_dict()
+                det = d.get('exam_details', {})
+                if filter_dept != "All" and det.get('department') != filter_dept: continue
+                filtered_docs.append(doc)
+
+            if not filtered_docs: st.info(f"📭 No pending items for {filter_dept}.")
+            else:
+                for doc in filtered_docs:
+                    d = doc.to_dict()
+                    det = d.get('exam_details', {})
+                    status = d.get('status', 'NEW')
+                    badge = "badge-draft"
+                    if status == "SUBMITTED": badge = "badge-submitted"
+                    elif status == "SCRUTINIZED": badge = "badge-scrutinized"
+                    elif status == "APPROVED": badge = "badge-approved"
+                    elif status == "REVISION": badge = "badge-revision"
+
+                    with st.expander(f"{det.get('courseCode')} - {det.get('courseName')} ({det.get('setType')})"):
+                        st.markdown(f"<span class='badge {badge}'>{status}</span> | 🏢 <b>{det.get('department')}</b> | {det.get('examType')}", unsafe_allow_html=True)
+                        if d.get('scrutiny_comments'): st.error(f"Feedback: {d.get('scrutiny_comments')}")
+                        if st.button("📂 Open Editor", key=f"ld_{doc.id}"):
+                            st.session_state.exam_details = d['exam_details']
+                            st.session_state.sections = d['sections']
+                            st.session_state.current_doc_id = doc.id
+                            st.session_state.current_doc_status = status
+                            st.success("Loaded!")
+                            st.rerun()
+
+# === TAB 2: EDITOR (UNRESTRICTED) ===
+with t_edit:
+    col_rst, col_fill = st.columns([1, 4])
+    if col_rst.button("🆕 New Exam / Reset"):
+        st.session_state.current_doc_id = None
+        st.session_state.current_doc_status = "NEW"
+        st.session_state.exam_details = init_exam_data()
+        st.session_state.sections = [{'id': 1, 'isNote': False, 'questions': [{'id': 101, 'qNo': '1.a', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}]}]
+        st.rerun()
+
+    read_only = False
+    if role == 'approver' or (role == 'faculty' and st.session_state.current_doc_status in ['SUBMITTED', 'APPROVED']):
+        st.warning("🔒 View Only Mode (Exam Submitted)"); read_only = True
+
+    with st.expander("📝 Exam Header & Settings", expanded=True):
+        user_dept = st.session_state.user.get('department')
+        manual_entry = False
+        
+        if not read_only and role in ['faculty', 'admin']:
+            c_tog1, c_tog2 = st.columns(2)
+            manual_entry = c_tog1.toggle("✍️ Manual Entry (No Schedule)", value=False)
+            ignore_dates = c_tog2.checkbox("🗓️ Ignore Date Restrictions", value=True) 
             
-            session_id = f"{date_val}_{course['subcode']}_{course['section']}_{period_val}"
+            if not manual_entry:
+                dept_index = 0
+                if user_dept in DEPTS: dept_index = DEPTS.index(user_dept)
+                sel_branch = st.selectbox("📂 Select Branch/Dept to View Subjects", DEPTS, index=dept_index)
+                
+                active_subjects = []
+                if db:
+                    try:
+                        all_cycles = db.collection("exam_schedule").stream()
+                        today = datetime.date.today()
+                        for cy in all_cycles:
+                            c_data = cy.to_dict()
+                            try:
+                                s_start = datetime.datetime.strptime(c_data['submission_start'].split(' ')[0], "%Y-%m-%d").date()
+                                s_end = datetime.datetime.strptime(c_data['submission_end'].split(' ')[0], "%Y-%m-%d").date()
+                                if (s_start <= today <= s_end) or ignore_dates:
+                                    for s in c_data.get('subjects', []):
+                                        s_branch = s.get('Branch', '').upper()
+                                        if not s_branch or s_branch == sel_branch or s_branch in ["ALL", "COMMON"]:
+                                            s['_cycle_id'] = c_data['cycle_id']
+                                            active_subjects.append(s)
+                            except: continue
+                    except: pass
+
+                if not active_subjects: st.warning(f"⚠️ No active exams found for {sel_branch}.")
+                else:
+                    active_subjects = sorted(active_subjects, key=lambda x: x.get('SubName', ''))
+                    opts = ["-- Select --"] + [f"{s.get('SubCode','?')} : {s.get('SubName','Unknown')}" for s in active_subjects]
+                    curr_code = st.session_state.exam_details.get('courseCode')
+                    curr_idx = 0
+                    if curr_code:
+                        for idx, s in enumerate(active_subjects):
+                            if s.get('SubCode') == curr_code: curr_idx = idx + 1; break
+                    sel = st.selectbox("📌 Select Subject", opts, index=curr_idx)
+
+                    if sel and sel != "-- Select --":
+                        chosen = active_subjects[opts.index(sel) - 1]
+                        st.session_state.exam_details.update({
+                            'acadYear': chosen.get('AY'), 'semester': str(chosen.get('Sem')), 'examType': chosen.get('Type'),
+                            'courseCode': chosen.get('SubCode'), 'courseName': chosen.get('SubName'), 'examDate': chosen.get('ExamDate'),
+                            'department': sel_branch, 'scheduleId': chosen.get('_cycle_id')
+                        })
+
+        input_disabled = True
+        if manual_entry and not read_only: input_disabled = False
+        
+        c1, c2, c3, c4 = st.columns(4)
+        st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", st.session_state.exam_details.get('acadYear'), disabled=input_disabled)
+        st.session_state.exam_details['department'] = c2.text_input("Department", st.session_state.exam_details.get('department'), disabled=read_only)
+        st.session_state.exam_details['semester'] = c3.text_input("Semester", st.session_state.exam_details.get('semester'), disabled=input_disabled)
+        st.session_state.exam_details['examType'] = c4.text_input("Exam Type", st.session_state.exam_details.get('examType'), disabled=input_disabled)
+
+        c1, c2, c3, c4 = st.columns(4) 
+        st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", st.session_state.exam_details.get('examDate'), disabled=input_disabled)
+        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", st.session_state.exam_details.get('courseCode'), disabled=input_disabled)
+        
+        set_opts = ["Set A", "Set B", "Set C"]
+        curr_set = st.session_state.exam_details.get('setType', 'Set A')
+        st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set) if curr_set in set_opts else 0, disabled=read_only)
+        
+        st.session_state.exam_details['courseName'] = c4.text_input("Course Name", st.session_state.exam_details.get('courseName'), disabled=input_disabled)
+
+        st.markdown("**⚙️ Paper Settings & Signatories**")
+        c1, c2 = st.columns(2)
+        st.session_state.exam_details['duration'] = c1.text_input("Duration", st.session_state.exam_details.get('duration'), disabled=read_only)
+        st.session_state.exam_details['maxMarks'] = c2.number_input("Max Marks", value=int(st.session_state.exam_details.get('maxMarks', 50)), disabled=read_only)
+
+        s1, s2, s3 = st.columns(3)
+        def_prep = st.session_state.exam_details.get('preparedBy')
+        if not def_prep: def_prep = st.session_state.user.get('name', 'Faculty')
+        st.session_state.exam_details['preparedBy'] = s1.text_input("Prepared By", value=def_prep, disabled=read_only)
+        st.session_state.exam_details['scrutinizedBy'] = s2.text_input("Scrutinized By", value=st.session_state.exam_details.get('scrutinizedBy', ''), disabled=read_only)
+        st.session_state.exam_details['approvedBy'] = s3.text_input("Approved By", value=st.session_state.exam_details.get('approvedBy', ''), disabled=read_only)
+
+    st.markdown("#### Questions Editor")
+    for i, section in enumerate(st.session_state.sections):
+        with st.container():
+            st.markdown(f"**Block {i+1}**")
+            if section.get('isNote'):
+                c_del, c_txt = st.columns([1, 10])
+                if not read_only and c_del.button("🗑️", key=f"dels_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
+                section['text'] = c_txt.text_input("Instruction", section['text'], key=f"n_{section['id']}", disabled=read_only)
+            else:
+                h1, h2 = st.columns([10, 1])
+                if not read_only and h2.button("🗑️", key=f"dels_{section['id']}"): st.session_state.sections.pop(i); st.rerun()
+                
+                for j, q in enumerate(section['questions']):
+                    c1, c2 = st.columns([1, 8])
+                    q['qNo'] = c1.text_input("No.", q['qNo'], key=f"qn_{q['id']}", disabled=read_only)
+                    q['text'] = c2.text_area("Question", q['text'], height=70, key=f"qt_{q['id']}", disabled=read_only)
+                    
+                    if q['text'].upper() != 'OR':
+                        m1, m2, m3, m4 = st.columns([2,2,2,1])
+                        q['marks'] = m1.number_input("M", float(q['marks']), key=f"mk_{q['id']}", disabled=read_only)
+                        q['co'] = m2.selectbox("CO", COS_LIST, key=f"co_{q['id']}", disabled=read_only)
+                        q['level'] = m3.selectbox("L", BLOOMS_LEVELS, key=f"lv_{q['id']}", disabled=read_only)
+                        if not read_only and m4.button("❌", key=f"dq_{q['id']}"): section['questions'].pop(j); st.rerun()
+                
+                if not read_only and st.button("➕ Add Question", key=f"addq_{section['id']}"):
+                    section['questions'].append({'id': int(datetime.datetime.now().timestamp()*1000), 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}); st.rerun()
+
+    if not read_only:
+        st.divider()
+        b1, b2 = st.columns(2)
+        if b1.button("➕ New Question Block"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': False, 'questions': [{'id': int(datetime.datetime.now().timestamp()*1000)+1, 'qNo':'', 'text':'', 'marks':0, 'co':'CO1', 'level':'L1'}]}); st.rerun()
+        if b2.button("➕ Add Instruction"): st.session_state.sections.append({'id': int(datetime.datetime.now().timestamp()*1000), 'isNote': True, 'text': 'Note: Answer any five questions'}); st.rerun()
+
+    st.markdown("### Actions")
+    current_id = st.session_state.get('current_doc_id')
+    d = st.session_state.exam_details
+    if not current_id and d['courseCode']:
+        safe_ay = str(d['acadYear']).replace(" ", "")
+        safe_set = str(d.get('setType', 'Set A')).replace(" ", "")
+        current_id = f"{safe_ay}_{d['department']}_{d['semester']}_{d['examType']}_{d['courseCode']}_{safe_set}"
+
+    c1, c2, c3 = st.columns(3)
+    if role in ['faculty', 'admin']:
+        if c1.button("💾 Save Draft"):
+            if not d['courseCode']: st.error("Select a subject first.")
+            elif db:
+                data = {
+                    'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections,
+                    'status': 'DRAFT', 'author_id': st.session_state.user['id'], 'author_name': st.session_state.user.get('name', 'Faculty'),
+                    'created_at': str(datetime.datetime.now())
+                }
+                db.collection("exams").document(current_id).set(data)
+                st.session_state.current_doc_id = current_id
+                st.success(f"Draft Saved: {current_id}")
+
+        if c2.button("📤 Submit for Review", type="primary"):
+            if not current_id: st.error("Save Draft first")
+            elif db:
+                db.collection("exams").document(current_id).update({'status': 'SUBMITTED', 'exam_details.preparedBy': st.session_state.exam_details.get('preparedBy')})
+                st.session_state.current_doc_status = "SUBMITTED"
+                st.success("Submitted successfully!")
+
+    if role == 'scrutinizer' and st.session_state.current_doc_status == 'SUBMITTED':
+        comm = st.text_area("Scrutiny Comments")
+        if c1.button("Return for Revision") and db: db.collection("exams").document(current_id).update({'status':'REVISION', 'scrutiny_comments':comm}); st.rerun()
+        if c2.button("Approve & Forward", type="primary") and db: db.collection("exams").document(current_id).update({'status':'SCRUTINIZED', 'exam_details.scrutinizedBy': st.session_state.user.get('name', 'Scrutinizer')}); st.success("Approved"); st.rerun()
+
+    if role == 'approver' and st.session_state.current_doc_status == 'SCRUTINIZED':
+        if c3.button("✅ Final Publish", type="primary") and db: db.collection("exams").document(current_id).update({'status':'APPROVED', 'exam_details.approvedBy': st.session_state.user.get('name', 'Approver')}); st.success("Published!"); st.rerun()
+
+    with st.expander("👁️ Live Preview"):
+        html = generate_html(st.session_state.exam_details, st.session_state.sections)
+        st.components.v1.html(html, height=800, scrolling=True)
+
+# === TAB 3: LIBRARY (SECURE & OPTIMIZED) ===
+with t_lib:
+    st.header("📚 Exam Archive")
+    st.caption("Access approved papers and result templates.")
+
+    if db:
+        c_ref, c_h = st.columns([1, 5])
+        if c_ref.button("🔄 Refresh Library"): 
+            if 'lib_cache' in st.session_state: del st.session_state.lib_cache
+
+        if 'lib_cache' not in st.session_state:
+            st.session_state.lib_cache = list(db.collection("exams").where("status", "==", "APPROVED").stream())
+        
+        docs = st.session_state.lib_cache
+
+        schedule_end_dates = {}
+        try:
+            sch_ref = st.session_state.get('cycles_cache', [])
+            if not sch_ref: sch_ref = db.collection("exam_schedule").stream()
             
-            # Check existing
-            already_marked = False
-            old_absentees = []
+            for s in sch_ref:
+                sd = s.to_dict()
+                end_str = sd.get('submission_end', '').split(' ')[0]
+                schedule_end_dates[s.id] = datetime.datetime.strptime(end_str, "%Y-%m-%d").date()
+        except: pass
+
+        if not docs: st.info("📭 No approved question papers found yet.")
+        else:
+            docs.sort(key=lambda x: x.to_dict().get('exam_details', {}).get('courseCode', ''))
+            for doc in docs:
+                d = doc.to_dict()
+                det = d.get('exam_details', {})
+                sec_data = d.get('sections', [])
+                
+                cycle_id = det.get('scheduleId')
+                cycle_end = schedule_end_dates.get(cycle_id)
+                today = datetime.date.today()
+                
+                is_admin = (st.session_state.user['role'] == 'admin')
+                is_cycle_over = (cycle_end and today > cycle_end)
+                show_sensitive_info = is_admin or is_cycle_over
+
+                label = f"{det.get('courseCode')} : {det.get('courseName')} ({det.get('examType')}) - {det.get('setType', 'Set ?')}"
+                
+                with st.expander(label):
+                    is_final = d.get('is_final_exam', False)
+                    if is_final:
+                        if show_sensitive_info: st.success("✅ **SELECTED FINAL EXAM** (Ready for Results)")
+                        else: st.info("🔒 Status: Approved (Selection Hidden until Exam Cycle Ends)")
+                    else: st.write(f"Status: Approved Backup ({det.get('setType')})")
+
+                    data_rows = []
+                    header_info = {
+                        "Exam Cycle": det.get('scheduleId', ''), "Academic Year": det.get('acadYear', ''),
+                        "Semester": det.get('semester', ''), "Department": det.get('department', ''),
+                        "Exam Type": det.get('examType', ''), "Course Code": det.get('courseCode', ''),
+                        "Course Name": det.get('courseName', ''), "Exam Date": det.get('examDate', '')
+                    }
+                    for sec in sec_data:
+                        if not sec.get('isNote'):
+                            for q in sec['questions']:
+                                try: m_val = float(q.get('marks', 0))
+                                except: m_val = 0
+                                if m_val > 0:
+                                    row = header_info.copy()
+                                    row.update({"Q.No": q.get('qNo'), "Question": q.get('text'), "Marks": m_val, "CO": q.get('co'), "Level": q.get('level')})
+                                    data_rows.append(row)
+                    
+                    csv_analysis = pd.DataFrame(data_rows).to_csv(index=False).encode('utf-8') if data_rows else b""
+                    html_content = generate_html(det, sec_data)
+                    b64 = base64.b64encode(html_content.encode()).decode()
+
+                    c1, c2, c3 = st.columns([1, 1, 1])
+                    with c1:
+                        href = f'<a href="data:text/html;base64,{b64}" download="{det.get("courseCode")}_{det.get("setType")}.html" style="text-decoration:none;"><button style="width:100%; padding:8px; border-radius:5px; border:1px solid #ccc;">📄 View Paper</button></a>'
+                        st.markdown(href, unsafe_allow_html=True)
+                    with c2:
+                        st.download_button("📊 Analysis CSV", csv_analysis, f"{det.get('courseCode')}_Data.csv", "text/csv", use_container_width=True)
+                    
+                    with c3:
+                        if is_final and show_sensitive_info:
+                            mark_cols = ['USN', 'Student Name']
+                            for sec in sec_data:
+                                if not sec.get('isNote'):
+                                    for q in sec['questions']:
+                                        try: m = int(q.get('marks',0))
+                                        except: m=0
+                                        if m > 0: mark_cols.append(f"Q{q.get('qNo')} ({m})")
+                            df_temp = pd.DataFrame(columns=mark_cols)
+                            csv_temp = df_temp.to_csv(index=False).encode('utf-8')
+                            st.download_button("📝 Marks Entry Template", csv_temp, f"{det.get('courseCode')}_MarksEntry.csv", "text/csv", use_container_width=True, type="primary")
+                        elif is_final and not show_sensitive_info: st.caption("🔒 Template unlocks after exam cycle.")
+
+# === TAB 4: CALENDAR ===
+with t_cal:
+    st.header("📅 Academic Schedule")
+    if role == 'admin':
+        with st.form("evt"):
+            t = st.text_input("Title"); d = st.date_input("Date"); ty = st.selectbox("Tag", ["Exam", "Deadline", "Holiday"])
+            if st.form_submit_button("Add Event") and db: db.collection("events").add({'title':t, 'date':str(d), 'type':ty}); st.success("Added")
+    
+    if db:
+        evs = db.collection("events").order_by("date").stream()
+        for e in evs:
+            v = e.to_dict()
+            icon = "🔴" if v['type'] == 'Exam' else "🟡" if v['type'] == 'Deadline' else "🟢"
+            st.write(f"{icon} **{v['date']}**: {v['title']}")
+
+# === TAB 5: BACKUP ===
+with t_bak:
+    st.header("💾 Backup & Restore")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.info("Plain JSON")
+        js = json.dumps({'exam_details': st.session_state.exam_details, 'sections': st.session_state.sections})
+        st.download_button("Download JSON", js, "backup.json")
+    with c2:
+        st.warning("Encrypted")
+        pw = st.text_input("Password", type="password", key="bpw")
+        if pw:
             try:
-                doc_ref = db.collection('Class_Sessions').document(session_id)
-                doc_snap = doc_ref.get()
-                already_marked = doc_snap.exists
-                if already_marked:
-                    old_absentees = doc_snap.to_dict().get('absentees', [])
+                k = get_key_from_password(pw, 'new')
+                enc = Fernet(k).encrypt(js.encode())
+                st.download_button("Download Encrypted", enc, "backup.enc")
             except: pass
             
-            if already_marked:
-                st.warning(f"⚠️ Marked. Absentees: {len(old_absentees)}")
-                if not st.checkbox("Unlock to Update?", key='unlock_mark'): st.stop()
-            
-            s_list = sorted(get_students_cached(course['dept'], course['sem'], course['section']), key=lambda x: x['usn'])
-            
-            if s_list:
-                with st.form("mark"):
-                    st.write(f"Total: {len(s_list)}")
-                    select_all = st.checkbox("Select All", value=True)
-                    cols = st.columns(4); status_map = {}
-                    for i, s in enumerate(s_list):
-                        default_val = select_all
-                        if already_marked: default_val = s['usn'] not in old_absentees
-                        status_map[s['usn']] = cols[i%4].checkbox(s['usn'], value=default_val, key=s['usn'])
-                    
-                    if st.form_submit_button("Submit Update"):
-                        new_absentees = [u for u, p in status_map.items() if not p]
-                        batch = db.batch()
-                        
-                        batch.set(doc_ref, {
-                            "course_code": course['subcode'], "date": str(date_val),
-                            "period": period_val, "faculty_id": user['id'], "faculty_name": user['name'],
-                            "total_students": len(s_list), "absentees": new_absentees, "timestamp": datetime.datetime.now()
-                        })
-                        
-                        sub_key = sanitize_key(course['subcode'])
-                        
-                        if not already_marked:
-                            for s in s_list:
-                                ref = db.collection('Student_Summaries').document(s['usn'])
-                                batch.set(ref, {f"{sub_key}.title": course['subtitle'], f"{sub_key}.total": firestore.Increment(1)}, merge=True)
-                                if s['usn'] not in new_absentees: 
-                                    batch.set(ref, {f"{sub_key}.attended": firestore.Increment(1)}, merge=True)
-                            st.toast("New Attendance Saved!", icon="✅")
-                        
-                        else:
-                            changes = 0
-                            for s in s_list:
-                                usn = s['usn']
-                                ref = db.collection('Student_Summaries').document(usn)
-                                if usn in old_absentees and usn not in new_absentees:
-                                    batch.set(ref, {f"{sub_key}.attended": firestore.Increment(1)}, merge=True)
-                                    changes += 1
-                                elif usn not in old_absentees and usn in new_absentees:
-                                    batch.set(ref, {f"{sub_key}.attended": firestore.Increment(-1)}, merge=True)
-                                    changes += 1
-                            st.toast(f"Updated! {changes} students adjusted.", icon="♻️")
-                        batch.commit()
-    with tab_history:
-        try:
-            logs_stream = db.collection('Class_Sessions').where("faculty_id", "==", user['id']).limit(50).stream() 
-            logs = sorted([l for l in logs_stream], key=lambda x: x.to_dict().get('date', ''), reverse=True)
-            
-            if logs:
-                data = []
-                for l in logs:
-                    d = l.to_dict()
-                    d_date = d.get('date', 'Unknown')
-                    tot = d.get('total_students', 0)
-                    if tot == 0: 
-                        tot = len(get_students_cached(d.get('dept','ECE'), d.get('sem','3'), d.get('section','A'))) 
-                    present = tot - len(d.get('absentees', []))
-                    data.append({
-                        "Date": d_date, "Period": d.get('period', '-'), 
-                        "Class": d.get('course_code', '?'), "Present": f"{present}/{tot}"
-                    })
-                st.dataframe(pd.DataFrame(data), use_container_width=True)
-            else:
-                st.info("No recent history.")
-        except Exception:
-            st.info("History unavailable.")
-
-    with tab_reports:
-        render_report_tab(prefix="fac_")
-
-def admin_dashboard():
-    st.title("⚙️ Admin Dashboard")
-    t1, t2, t3, t4, t5 = st.tabs(["📤 Uploads", "🔧 Tools", "📊 Reports", "👨‍🏫 Faculty", "🎓 Students"])
-    
-    with t1:
-        # BULK UPLOAD SECTION (Faculty Added)
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("### 📘 Courses")
-            f1 = st.file_uploader("Courses CSV", type='csv', key='csv_courses')
-            if f1 and st.button("Process Courses"):
-                c, logs = process_courses_csv(pd.read_csv(f1))
-                st.toast(f"Processed {c} courses!", icon="✅")
-        with c2:
-            st.markdown("### 🎓 Students")
-            f2 = st.file_uploader("Students CSV", type='csv', key='csv_students')
-            if f2 and st.button("Process Students"):
-                c = process_students_csv(pd.read_csv(f2))
-                st.toast(f"Registered {c} students!", icon="✅")
-        with c3:
-            st.markdown("### 👨‍🏫 Faculty")
-            f3 = st.file_uploader("Faculty CSV", type='csv', key='csv_faculty')
-            if f3 and st.button("Process Faculty"):
-                c, msg = process_faculty_csv(pd.read_csv(f3))
-                if c > 0:
-                    st.toast(f"Onboarded {c} faculty members!", icon="✅")
-                else:
-                    st.error(msg)
-
-    with t2:
-        if st.button("🔄 Sync/Fix All"):
-            with st.spinner("Syncing..."): n = admin_force_sync()
-            st.toast(f"Synced {n} student profiles!", icon="✅")
-
-    with t3:
-        render_report_tab(prefix="adm_")
-
-    with t4:
-        st.subheader("Manage Faculty")
-        tab_new, tab_manage = st.tabs(["Add New", "Manage & Reassign"])
-        
-        with tab_new:
-            with st.form("add_fac_form"):
-                c1, c2 = st.columns(2)
-                n_name = c1.text_input("Name")
-                n_dept = c2.text_input("Dept")
-                n_email = c1.text_input("Email")
-                n_pass = c2.text_input("Password", type="password")
-                submit_fac = st.form_submit_button("Create Faculty")
-                
-                if submit_fac:
-                    clean_email = n_email.strip().lower()
-                    if clean_email:
-                        db.collection('Users').document(clean_email).set({
-                            "name": n_name, "role": "Faculty", "dept": n_dept, "password": n_pass
-                        })
-                        st.toast(f"Created Faculty: {clean_email}", icon="✅")
-                    else: st.error("Email is required.")
-        
-        with tab_manage:
-            sel_dept = st.selectbox("Department", ["ECE", "CSE", "ISE", "AIML", "MECH", "CIVIL", "EEE"], key='fac_dept')
-            try:
-                facs = list(db.collection('Users').where("role", "==", "Faculty").where("dept", "==", sel_dept).stream())
-                if facs:
-                    f_map = {f.to_dict().get('name','Unknown'): f.id for f in facs}
-                    sel_fac = st.selectbox("Select Faculty", list(f_map.keys()))
-                    fid = f_map[sel_fac]
-                    courses = list(db.collection('Courses').where("faculty_id", "==", fid).stream())
-                    if courses:
-                        for c in courses:
-                            cd = c.to_dict()
-                            with st.expander(f"{cd.get('subcode','?')} - {cd.get('subtitle','?')} ({cd.get('sem','?')}{cd.get('section','?')})"):
-                                new_email = st.text_input("Reassign to (Email):", key=c.id)
-                                if st.button("Update", key=f"btn_{c.id}"):
-                                    db.collection('Courses').document(c.id).update({"faculty_id": new_email.strip().lower()})
-                                    st.toast("Reassigned Successfully", icon="✅")
-                                    st.rerun()
-                    else: st.info("No courses.")
-                else: st.warning("No faculty found.")
-            except: st.error("Error loading faculty.")
-
-    with t5:
-        st.subheader("Manage Students")
-        ts, ta = st.tabs(["🔍 Search & Edit", "➕ Add Manual"])
-        with ts:
-            with st.form("search_form"):
-                col_s, col_b = st.columns([3, 1])
-                s_in_raw = col_s.text_input("Enter USN")
-                search_btn = st.form_submit_button("🔍 Search")
-            
-            if search_btn:
-                st.session_state['admin_search_usn'] = s_in_raw.strip().upper()
-            
-            s_in = st.session_state.get('admin_search_usn', '')
-            
-            if s_in:
-                doc = db.collection('Students').document(s_in).get()
-                if doc.exists:
-                    d = doc.to_dict()
-                    st.markdown("---")
-                    st.subheader(f"{d.get('name', 'N/A')}")
-                    st.caption(f"USN: {s_in}")
-                    with st.container(border=True):
-                        c1, c2, c3 = st.columns(3)
-                        c1.text(f"Dept: {d.get('dept', '-')}")
-                        c2.text(f"Sem: {d.get('sem', '-')}")
-                        c3.text(f"Section: {d.get('section', '-')}")
-                    st.write("")
-                    with st.expander("⚠️ Danger Zone"):
-                        st.warning("Deletes student AND attendance stats.")
-                        if st.checkbox(f"I confirm I want to delete {s_in}"):
-                            if st.button("🗑️ Permanently Delete"):
-                                db.collection('Students').document(s_in).delete()
-                                db.collection('Student_Summaries').document(s_in).delete()
-                                st.toast("Deleted Successfully", icon="🗑️")
-                                st.session_state['admin_search_usn'] = ""
-                                st.rerun()
-                else: st.warning(f"Student '{s_in}' not found.")
-        with ta:
-            with st.form("manual_stu"):
-                m_usn = st.text_input("USN").upper(); m_name = st.text_input("Name")
-                m_dept = st.selectbox("Dept", ["ECE","CSE","ISE"]); m_sem = st.selectbox("Sem",["1","2","3","4","5","6","7","8"])
-                m_sec = st.text_input("Sec", "A").upper()
-                if st.form_submit_button("Add Student"):
-                    db.collection('Students').document(m_usn).set({"name":m_name,"dept":m_dept,"sem":m_sem,"section":m_sec,"ay":"2025_26"})
-                    courses = db.collection('Courses').where("dept", "==", m_dept).where("sem", "==", m_sem).where("section", "==", m_sec).stream()
-                    updates = {}
-                    for c in courses:
-                        k = sanitize_key(c.to_dict().get('subcode'))
-                        if k:
-                            updates[f"{k}.total"] = firestore.Increment(0)
-                            updates[f"{k}.attended"] = firestore.Increment(0)
-                    if updates: db.collection('Student_Summaries').document(m_usn).set(updates, merge=True)
-                    st.toast("Student Added!", icon="✅")
-
-def student_dashboard():
-    st.markdown("<h1 style='text-align: center;'>🎓 Student Portal</h1>", unsafe_allow_html=True)
-    c2 = st.columns([1,2,1])[1]
-    
-    with c2.form("std_login"):
-        usn_input = st.text_input("Enter USN")
-        btn = st.form_submit_button("Check Attendance")
-    
-    if btn and usn_input:
-        usn = usn_input.strip().upper()
-        try:
-            doc = db.collection('Student_Summaries').document(usn).get()
-            if not doc.exists: 
-                st.error("USN Not Found")
-                return
-            
-            data = doc.to_dict()
-            structured = {}
-            for k, v in data.items():
-                if "." in k:
-                    try:
-                        p = k.split('.')
-                        if p[0] not in structured: structured[p[0]] = {}
-                        structured[p[0]][p[1]] = v
-                    except: pass
-            
-            rows = []
-            for c, s in structured.items():
-                t = s.get('total',0); a = s.get('attended',0)
-                p = 100.0 if t==0 else (a/t*100)
-                rows.append({"Subject":c, "Classes":f"{a}/{t}", "Percentage":p})
-            
-            if rows:
-                df = pd.DataFrame(rows)
-                st.metric("Average", f"{df['Percentage'].mean():.1f}%")
-                
-                # FIXED BAR GRAPH
-                c = alt.Chart(df).mark_bar(
-                    size=30,  # Fixes "Green Wall" Effect
-                    cornerRadiusTopLeft=5,
-                    cornerRadiusTopRight=5
-                ).encode(
-                    x=alt.X('Subject', sort='-y', scale=alt.Scale(padding=0.5)), 
-                    y=alt.Y('Percentage', scale=alt.Scale(domain=[0, 100])),
-                    color=alt.condition(alt.datum.Percentage < 75, alt.value('#FF4B4B'), alt.value('#00CC96')),
-                    tooltip=['Subject', 'Percentage']
-                ).properties(height=250)
-                
-                st.altair_chart(c, use_container_width=True)
-                st.dataframe(df)
-            else: st.info("No attendance data yet.")
-        except Exception as e: st.error(f"Error: {e}")
-
-def main():
-    with st.sidebar:
-        st.title("🔐 Login")
-        if st.session_state['auth_user']:
-            st.success(f"User: {st.session_state['auth_user']['name']}")
-            st.info(f"ID: {st.session_state['auth_user']['id']}")
-            if st.button("Logout"): 
-                st.session_state['auth_user'] = None
-                st.rerun()
-        else:
-            with st.form("login_form"):
-                uid = st.text_input("Email/ID")
-                pwd = st.text_input("Password", type="password")
-                submit_login = st.form_submit_button("Sign In")
-            
-            if submit_login:
-                uid = uid.strip()
-                pwd = pwd.strip()
-                
-                if not uid: 
-                    st.warning("Enter ID")
-                    return
-                
-                if uid == "admin" and pwd == "admin123":
-                    st.session_state['auth_user'] = {"id":"admin", "name":"Admin", "role":"Admin"}
-                    st.rerun()
-                
+    st.divider()
+    up = st.file_uploader("Restore File", type=['json', 'enc'])
+    if up:
+        if up.name.endswith('.json'):
+            if st.button("Load JSON"):
+                d = json.load(up)
+                st.session_state.exam_details = d['exam_details']; st.session_state.sections = d['sections']
+                st.success("Loaded!"); st.rerun()
+        elif up.name.endswith('.enc'):
+            pwu = st.text_input("Unlock Pass", type="password")
+            if st.button("Unlock"):
                 try:
-                    v1 = uid.lower()
-                    v2 = sanitize_key(uid)
-                    v3 = uid
-                    target_doc = None; final_id = None
-
-                    doc = db.collection('Users').document(v1).get()
-                    if doc.exists: target_doc = doc; final_id = v1
-                    if not target_doc:
-                        doc = db.collection('Users').document(v2).get()
-                        if doc.exists: target_doc = doc; final_id = v2
-                    if not target_doc:
-                        doc = db.collection('Users').document(v3).get()
-                        if doc.exists: target_doc = doc; final_id = v3
-
-                    if target_doc:
-                        user_data = target_doc.to_dict()
-                        if user_data.get('password') == pwd:
-                            st.session_state['auth_user'] = {**user_data, "id": final_id}
-                            st.toast("Login Successful!", icon="🎉")
-                            st.rerun()
-                        else: st.error("❌ Incorrect Password")
-                    else: st.error(f"❌ User ID not found.")
-                except Exception as e: st.error(f"System Error: {e}")
-
-    user = st.session_state.get('auth_user')
-    if user:
-        if user['role'] == "Admin": admin_dashboard()
-        elif user['role'] == "Faculty": faculty_dashboard(user)
-    else: student_dashboard()
-
-if __name__ == "__main__":
-    main()
+                    raw = up.read()
+                    try: k = get_key_from_password(pwu, 'new'); d = json.loads(Fernet(k).decrypt(raw).decode())
+                    except: k = get_key_from_password(pwu, 'old'); d = json.loads(Fernet(k).decrypt(raw).decode())
+                    st.session_state.exam_details = d['exam_details']; st.session_state.sections = d['sections']
+                    st.success("Loaded!"); st.rerun()
+                except: st.error("Wrong Password")
