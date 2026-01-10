@@ -90,6 +90,26 @@ def login_user(username, password):
     except Exception: pass
     return None
 
+def sync_widgets(details):
+    """Forces Streamlit widgets to update with new data from code."""
+    # This manually pushes data into the widget keys to prevent overwriting by old state
+    st.session_state['inp_ay'] = details.get('acadYear', '')
+    st.session_state['inp_dept'] = details.get('department', '')
+    st.session_state['inp_sem'] = details.get('semester', '')
+    st.session_state['inp_type'] = details.get('examType', '')
+    st.session_state['inp_date'] = details.get('examDate', '')
+    st.session_state['inp_code'] = details.get('courseCode', '')
+    st.session_state['inp_name'] = details.get('courseName', '')
+    st.session_state['inp_dur'] = details.get('duration', '')
+    
+    # Handle Numeric/Select fields carefully
+    st.session_state['inp_set'] = details.get('setType', 'Set A')
+    st.session_state['inp_ver'] = details.get('version', 'v1')
+    try:
+        st.session_state['inp_max'] = int(details.get('maxMarks', 50))
+    except:
+        st.session_state['inp_max'] = 50
+
 def generate_html(details, sections):
     header_title = f"{details.get('examType', 'Exam')} - {details.get('semester', '')} Semester"
     if details.get('setType'): header_title += f" ({details.get('setType')})"
@@ -146,7 +166,8 @@ def generate_html(details, sections):
                     <div style="font-size:12px; font-weight:bold;">{details.get('department')}</div>
                     <div style="font-size:10px; font-style:italic;">{details.get('accreditation')}</div>
                 </div>
-                <div class="logo-box"></div> </div>
+                <div class="logo-box"></div>
+            </div>
 
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                 <span style="font-weight:bold; font-size:16px;">USN</span>
@@ -348,12 +369,81 @@ with t_inbox:
                 st.rerun()
 
     if role == 'admin' and view_mode == "📊 Status Dashboard":
-        # ... [Dashboard Code] ...
-        st.info("Dashboard view enabled.")
+        st.markdown("### 📊 Exam Cycle Compliance")
+        if 'cycles_cache' not in st.session_state and db:
+             st.session_state.cycles_cache = list(db.collection("exam_schedule").stream())
+        cycles = [d.id for d in st.session_state.get('cycles_cache', [])]
+        if not cycles:
+            st.warning("No exam schedules found. Upload a schedule in the Sidebar first.")
+        else:
+            sel_cycle = st.selectbox("Select Exam Cycle", cycles)
+            if sel_cycle and db:
+                sch_doc = db.collection("exam_schedule").document(sel_cycle).get()
+                expected_subjects = sch_doc.to_dict().get('subjects', [])
+                submitted_docs = list(db.collection("exams").where("exam_details.scheduleId", "==", sel_cycle).stream())
+                
+                total_count = len(expected_subjects)
+                submitted_map = {} 
+                for d in submitted_docs:
+                    data = d.to_dict()
+                    code = data['exam_details'].get('courseCode')
+                    status = data.get('status', 'NEW')
+                    submitted_map[code] = status
+
+                pending_list = []
+                completed_list = []
+                for sub in expected_subjects:
+                    code = sub.get('SubCode'); name = sub.get('SubName'); dept = sub.get('Branch', 'Common')
+                    status = submitted_map.get(code, "PENDING")
+                    item = {"Code": code, "Name": name, "Dept": dept, "Status": status}
+                    if status == "PENDING" or status == "NEW": pending_list.append(item)
+                    else: completed_list.append(item)
+
+                sub_count = len(completed_list)
+                progress = sub_count / total_count if total_count > 0 else 0
+                
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Total Subjects", total_count); m2.metric("Received", sub_count); m3.metric("Pending", len(pending_list), delta_color="inverse")
+                st.progress(progress)
+                
+                c_pen, c_comp = st.columns(2)
+                with c_pen:
+                    st.error(f"❌ Pending ({len(pending_list)})")
+                    if pending_list: st.dataframe(pd.DataFrame(pending_list)[['Code', 'Name', 'Dept']], hide_index=True, use_container_width=True)
+                with c_comp:
+                    st.success(f"✅ Submitted ({len(completed_list)})")
+                    if completed_list: st.dataframe(pd.DataFrame(completed_list), hide_index=True, use_container_width=True)
         
     elif role == 'admin' and view_mode == "🔐 QP Selection (COE)":
-         # ... [COE Selection Code] ...
-         st.info("QP Selection view enabled.")
+         st.markdown("### 🔐 Final Exam Selection (Lottery)")
+         st.info("Select the final paper to be printed.")
+         if db:
+            docs = list(db.collection("exams").where("status", "==", "APPROVED").stream())
+            grouped = {}
+            for d in docs:
+                data = d.to_dict()
+                code = data['exam_details'].get('courseCode', 'Unknown')
+                if code not in grouped: grouped[code] = []
+                grouped[code].append(d)
+            if not grouped: st.warning("No approved papers ready.")
+            for code, papers in grouped.items():
+                sub_name = papers[0].to_dict()['exam_details'].get('courseName', '')
+                with st.expander(f"📦 {code} - {sub_name} ({len(papers)} Sets)"):
+                    cols = st.columns(len(papers))
+                    for i, doc in enumerate(papers):
+                        d = doc.to_dict()
+                        det = d['exam_details']
+                        is_final = d.get('is_final_exam', False)
+                        border = "2px solid #22c55e" if is_final else "1px solid #e2e8f0"
+                        bg = "#f0fdf4" if is_final else "#ffffff"
+                        with cols[i]:
+                            st.markdown(f"<div style='border:{border}; background:{bg}; padding:10px; border-radius:8px;'><b>{det.get('setType')}</b><br><small>{det.get('preparedBy')}</small></div>", unsafe_allow_html=True)
+                            if is_final: st.success("SELECTED")
+                            else:
+                                if st.button(f"Select {det.get('setType')}", key=f"sel_{doc.id}"):
+                                    for other_doc in papers: db.collection("exams").document(other_doc.id).update({'is_final_exam': False})
+                                    db.collection("exams").document(doc.id).update({'is_final_exam': True})
+                                    st.rerun()
 
     else:
         # --- NEW FOLDER-BASED INBOX ---
@@ -384,10 +474,9 @@ with t_inbox:
             if not grouped_docs:
                 st.info("📭 No documents found.")
             else:
-                # Sort cycles (newest first usually, but alphabetic here)
+                # Sort cycles
                 for cycle_id in sorted(grouped_docs.keys(), reverse=True):
                     with st.expander(f"📁 {cycle_id} ({len(grouped_docs[cycle_id])} Papers)", expanded=True):
-                        # Inside folder, show papers
                         for doc in grouped_docs[cycle_id]:
                             d = doc.to_dict()
                             det = d.get('exam_details', {})
@@ -399,19 +488,16 @@ with t_inbox:
                             elif status == "APPROVED": badge = "badge-approved"
                             elif status == "REVISION": badge = "badge-revision"
                             
-                            # ID Display
-                            clean_id = doc.id
-                            
                             c1, c2, c3 = st.columns([4, 2, 1])
                             with c1:
                                 st.markdown(f"**{det.get('courseCode')}** - {det.get('courseName')}")
-                                st.caption(f"ID: {clean_id} | {det.get('setType')} | {det.get('version', 'v1')}")
+                                st.caption(f"ID: {doc.id} | {det.get('setType')} | {det.get('version', 'v1')}")
                             with c2:
                                 st.markdown(f"<span class='badge {badge}'>{status}</span>", unsafe_allow_html=True)
                                 if d.get('scrutiny_comments'): st.error(d.get('scrutiny_comments'))
                             with c3:
                                 if st.button("📂 Open", key=f"ld_{doc.id}"):
-                                    # --- HEALER LOGIC: FIX MISSING KEYS ---
+                                    # --- HEALER LOGIC: FIX MISSING KEYS + SYNC WIDGETS ---
                                     saved_details = d.get('exam_details', {})
                                     full_details = init_exam_data() # Start with clean template
                                     full_details.update(saved_details) # Merge saved data
@@ -420,6 +506,10 @@ with t_inbox:
                                     st.session_state.sections = d.get('sections', [])
                                     st.session_state.current_doc_id = doc.id
                                     st.session_state.current_doc_status = status
+                                    
+                                    # CRITICAL: SYNC WIDGET STATE
+                                    sync_widgets(full_details)
+                                    
                                     st.rerun()
                             st.divider()
 
@@ -467,6 +557,7 @@ with t_edit:
         st.session_state.current_doc_status = "NEW"
         st.session_state.exam_details = init_exam_data()
         st.session_state.sections = [{'id': 1, 'isNote': False, 'questions': [{'id': 101, 'qNo': '1.a', 'text': '', 'marks': 0, 'co': 'CO1', 'level': 'L1'}]}]
+        sync_widgets(st.session_state.exam_details) # Sync reset state
         st.rerun()
 
     read_only = False
@@ -543,7 +634,7 @@ with t_edit:
                     if selected_code != current_code:
                         chosen = next((s for s in active_subjects if s.get('SubCode') == selected_code), None)
                         if chosen:
-                            st.session_state.exam_details.update({
+                            new_data = {
                                 'acadYear': chosen.get('AY'), 
                                 'semester': str(chosen.get('Sem')), 
                                 'examType': chosen.get('Type'),
@@ -552,7 +643,9 @@ with t_edit:
                                 'examDate': chosen.get('ExamDate'),
                                 'department': sel_branch, 
                                 'scheduleId': chosen.get('_cycle_id')
-                            })
+                            }
+                            st.session_state.exam_details.update(new_data)
+                            sync_widgets(st.session_state.exam_details) # <--- CRITICAL FIX: Forces widgets to update
                             st.rerun()
 
         input_disabled = True
@@ -648,7 +741,7 @@ with t_edit:
     # --- 5. ACTIONS ---
     st.markdown("### Actions")
     current_id = st.session_state.get('current_doc_id')
-    d = st.session_state.exam_details # <--- FIX FOR KEYERROR / NAMEERROR
+    d = st.session_state.exam_details 
     
     # Auto-Save Logic (Executed at end of script run if enabled)
     if auto_save_enabled and not read_only and d.get('courseCode'):
