@@ -109,6 +109,10 @@ def generate_html(details, sections):
                     <td style='text-align:center;'>{int(q['marks']) if q['marks'] > 0 else ''}</td>
                     <td style='text-align:center;'>{q['co']}</td><td style='text-align:center;'>{q['level']}</td></tr>"""
 
+    # --- LOGO URL (Update this link!) ---
+    # You can use a public URL or a base64 string
+    logo_src = "https://img.icons8.com/color/96/university.png" 
+
     return f"""
     <!DOCTYPE html>
     <html>
@@ -120,7 +124,9 @@ def generate_html(details, sections):
         .paper {{ width: 210mm; margin: 0 auto; background: white; }}
         table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }}
         td, th {{ border: 1px solid black; padding: 6px; }}
-        .header {{ text-align: center; margin-bottom: 20px; border-bottom: 2px solid black; padding-bottom: 10px; }}
+        .header-row {{ display: flex; align-items: center; border-bottom: 2px solid black; padding-bottom: 10px; margin-bottom: 20px; }}
+        .logo-box {{ flex: 0 0 100px; text-align: left; }}
+        .title-box {{ flex: 1; text-align: center; }}
         .inst {{ font-size: 24px; font-weight: bold; text-transform: uppercase; font-family: Arial, sans-serif; }}
         .meta {{ display: flex; justify-content: space-between; font-size: 14px; margin: 5px 0; }}
         .box {{ width: 25px; height: 25px; border: 1px solid black; display: inline-block; margin-right: -1px; }}
@@ -131,12 +137,18 @@ def generate_html(details, sections):
     </head>
     <body>
         <div class="paper">
-            <div class="header">
-                <div class="inst">{details.get('instituteName')}</div>
-                <div style="font-size:12px; font-weight:bold;">{details.get('subHeader')}</div>
-                <div style="font-size:12px; font-weight:bold;">{details.get('department')}</div>
-                <div style="font-size:10px; font-style:italic;">{details.get('accreditation')}</div>
-            </div>
+            <div class="header-row">
+                <div class="logo-box">
+                    <img src="{logo_src}" alt="Logo" style="width: 80px; height: auto;">
+                </div>
+                <div class="title-box">
+                    <div class="inst">{details.get('instituteName')}</div>
+                    <div style="font-size:12px; font-weight:bold;">{details.get('subHeader')}</div>
+                    <div style="font-size:12px; font-weight:bold;">{details.get('department')}</div>
+                    <div style="font-size:10px; font-style:italic;">{details.get('accreditation')}</div>
+                </div>
+                <div class="logo-box"></div> </div>
+
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
                 <span style="font-weight:bold; font-size:16px;">USN</span>
                 <div style="display:flex;">{usn_boxes}</div>
@@ -337,7 +349,7 @@ with t_inbox:
                 st.rerun()
 
     if role == 'admin' and view_mode == "📊 Status Dashboard":
-        # ... [Dashboard Code kept simple for brevity, paste previous logic if needed] ...
+        # ... [Dashboard Code kept simple for brevity] ...
         st.info("Dashboard view enabled.")
         
     elif role == 'admin' and view_mode == "🔐 QP Selection (COE)":
@@ -407,7 +419,7 @@ with t_inbox:
                                     st.rerun()
                             st.divider()
 
-# === TAB 2: EDITOR (STRICT ID TAGGING) ===
+# === TAB 2: EDITOR (FIXED: UNLOCKS MISSING DATA) ===
 with t_edit:
     # --- 1. FUNCTIONS ---
     def save_draft():
@@ -471,7 +483,7 @@ with t_edit:
         
         if not read_only and role in ['faculty', 'admin']:
             c_tog1, c_tog2 = st.columns(2)
-            manual_entry = c_tog1.toggle("✍️ Manual Entry (No CSV)", value=False)
+            manual_entry = c_tog1.toggle("✍️ Manual Entry (Unlock Fields)", value=False)
             ignore_dates = c_tog2.checkbox("🗓️ Ignore Dates", value=True) 
             
             if not manual_entry:
@@ -543,16 +555,16 @@ with t_edit:
         input_disabled = True
         if manual_entry and not read_only: input_disabled = False
         
-        # --- HEADER INPUTS (Explicit Keys) ---
+        # --- HEADER INPUTS (FIXED: disabled=input_disabled instead of disabled=True) ---
         c1, c2, c3, c4 = st.columns(4)
-        st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", value=st.session_state.exam_details.get('acadYear', ''), disabled=True, key="inp_ay", help="Locked by CSV")
-        st.session_state.exam_details['department'] = c2.text_input("Department", value=st.session_state.exam_details.get('department', ''), disabled=True, key="inp_dept", help="Locked by CSV")
-        st.session_state.exam_details['semester'] = c3.text_input("Semester", value=st.session_state.exam_details.get('semester', ''), disabled=True, key="inp_sem", help="Locked by CSV")
+        st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", value=st.session_state.exam_details.get('acadYear', ''), disabled=input_disabled, key="inp_ay", help="Toggle Manual Entry to Edit")
+        st.session_state.exam_details['department'] = c2.text_input("Department", value=st.session_state.exam_details.get('department', ''), disabled=input_disabled, key="inp_dept", help="Toggle Manual Entry to Edit")
+        st.session_state.exam_details['semester'] = c3.text_input("Semester", value=st.session_state.exam_details.get('semester', ''), disabled=input_disabled, key="inp_sem", help="Toggle Manual Entry to Edit")
         st.session_state.exam_details['examType'] = c4.text_input("Exam Type", value=st.session_state.exam_details.get('examType', ''), disabled=input_disabled, key="inp_type")
 
         c1, c2, c3, c4 = st.columns(4) 
         st.session_state.exam_details['examDate'] = c1.text_input("Exam Date", value=st.session_state.exam_details.get('examDate', ''), disabled=input_disabled, key="inp_date")
-        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", value=st.session_state.exam_details.get('courseCode', ''), disabled=True, key="inp_code", help="Locked by CSV")
+        st.session_state.exam_details['courseCode'] = c2.text_input("Course Code", value=st.session_state.exam_details.get('courseCode', ''), disabled=input_disabled, key="inp_code", help="Toggle Manual Entry to Edit")
         
         # SET & VERSION CONTROL
         set_opts = ["Set A", "Set B", "Set C"]
@@ -567,7 +579,7 @@ with t_edit:
         st.session_state.exam_details['setType'] = c3.selectbox("QP Set", set_opts, index=set_opts.index(curr_set), disabled=read_only, key="inp_set")
         st.session_state.exam_details['version'] = c4.selectbox("Version", ver_opts, index=ver_opts.index(curr_ver), disabled=read_only, key="inp_ver")
         
-        st.text_input("Course Name", value=st.session_state.exam_details.get('courseName', ''), disabled=True, key="inp_name")
+        st.text_input("Course Name", value=st.session_state.exam_details.get('courseName', ''), disabled=input_disabled, key="inp_name")
 
         st.markdown("**⚙️ Paper Settings & Signatories**")
         c1, c2 = st.columns(2)
