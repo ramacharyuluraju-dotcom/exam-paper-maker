@@ -109,8 +109,7 @@ def generate_html(details, sections):
                     <td style='text-align:center;'>{int(q['marks']) if q['marks'] > 0 else ''}</td>
                     <td style='text-align:center;'>{q['co']}</td><td style='text-align:center;'>{q['level']}</td></tr>"""
 
-    # --- LOGO URL (Update this link!) ---
-    # You can use a public URL or a base64 string
+    # --- LOGO URL ---
     logo_src = "https://img.icons8.com/color/96/university.png" 
 
     return f"""
@@ -349,11 +348,11 @@ with t_inbox:
                 st.rerun()
 
     if role == 'admin' and view_mode == "📊 Status Dashboard":
-        # ... [Dashboard Code kept simple for brevity] ...
+        # ... [Dashboard Code] ...
         st.info("Dashboard view enabled.")
         
     elif role == 'admin' and view_mode == "🔐 QP Selection (COE)":
-         # ... [COE Selection Code kept simple for brevity] ...
+         # ... [COE Selection Code] ...
          st.info("QP Selection view enabled.")
 
     else:
@@ -412,25 +411,29 @@ with t_inbox:
                                 if d.get('scrutiny_comments'): st.error(d.get('scrutiny_comments'))
                             with c3:
                                 if st.button("📂 Open", key=f"ld_{doc.id}"):
-                                    st.session_state.exam_details = d['exam_details']
-                                    st.session_state.sections = d['sections']
+                                    # --- HEALER LOGIC: FIX MISSING KEYS ---
+                                    saved_details = d.get('exam_details', {})
+                                    full_details = init_exam_data() # Start with clean template
+                                    full_details.update(saved_details) # Merge saved data
+                                    
+                                    st.session_state.exam_details = full_details
+                                    st.session_state.sections = d.get('sections', [])
                                     st.session_state.current_doc_id = doc.id
                                     st.session_state.current_doc_status = status
                                     st.rerun()
                             st.divider()
 
-# === TAB 2: EDITOR (FIXED: UNLOCKS MISSING DATA) ===
+# === TAB 2: EDITOR (FIXED: UNLOCKS MISSING DATA + KEYERROR FIX) ===
 with t_edit:
     # --- 1. FUNCTIONS ---
     def save_draft():
         """Saves current state to DB with STRICT ID."""
         d = st.session_state.exam_details
-        if not d['courseCode']: 
+        if not d.get('courseCode'): 
             st.error("Cannot save: No Subject Selected.")
             return
 
         # STRICT ID GENERATION: AY_DEPT_SUBCODE_SET_VERSION
-        # Sanitize inputs to ensure clean filenames
         safe_ay = str(d.get('acadYear', 'NA')).replace("/", "-").strip()
         safe_dept = str(d.get('department', 'GEN')).strip()
         safe_code = str(d.get('courseCode', 'NA')).strip()
@@ -439,7 +442,7 @@ with t_edit:
         
         # The STRICT ID
         strict_id = f"{safe_ay}_{safe_dept}_{safe_code}_{safe_set}_{safe_ver}"
-        st.session_state.current_doc_id = strict_id # Enforce this ID
+        st.session_state.current_doc_id = strict_id 
 
         if st.session_state.get('user'):
             try:
@@ -555,7 +558,7 @@ with t_edit:
         input_disabled = True
         if manual_entry and not read_only: input_disabled = False
         
-        # --- HEADER INPUTS (FIXED: disabled=input_disabled instead of disabled=True) ---
+        # --- HEADER INPUTS (Safe .get calls) ---
         c1, c2, c3, c4 = st.columns(4)
         st.session_state.exam_details['acadYear'] = c1.text_input("Academic Year", value=st.session_state.exam_details.get('acadYear', ''), disabled=input_disabled, key="inp_ay", help="Toggle Manual Entry to Edit")
         st.session_state.exam_details['department'] = c2.text_input("Department", value=st.session_state.exam_details.get('department', ''), disabled=input_disabled, key="inp_dept", help="Toggle Manual Entry to Edit")
@@ -645,15 +648,16 @@ with t_edit:
     # --- 5. ACTIONS ---
     st.markdown("### Actions")
     current_id = st.session_state.get('current_doc_id')
+    d = st.session_state.exam_details # <--- FIX FOR KEYERROR / NAMEERROR
     
     # Auto-Save Logic (Executed at end of script run if enabled)
-    if auto_save_enabled and not read_only and d['courseCode']:
+    if auto_save_enabled and not read_only and d.get('courseCode'):
         save_draft()
 
     c1, c2, c3 = st.columns(3)
     if role in ['faculty', 'admin']:
         if c1.button("💾 Save Draft", key="btn_save_man"):
-            if not d['courseCode']: st.error("Select a subject first.")
+            if not d.get('courseCode'): st.error("Select a subject first.")
             elif db:
                 save_draft()
 
